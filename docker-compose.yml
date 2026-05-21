@@ -1,0 +1,13 @@
+services:
+  server:
+    build: ./server
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./server/.env
+    volumes:
+      # 向量库持久化到本地，容器重启不丢数据
+      - ./server/chroma_db:/app/chroma_db
+      # 挂载数据集（不打进镜像，体积太大）
+      - ./ecommerce_agent_dataset:/app/data
+    restart: unless-stopped
