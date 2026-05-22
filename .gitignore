@@ -50,5 +50,4 @@ client/**/.idea/
 *.swp
 *.swo
 
-# ===== 数据集图片不上传（体积大，可本地挂载）=====
-ecommerce_agent_dataset/
+# 数据集直接提交（100条JSON + 100张图，体积可控）

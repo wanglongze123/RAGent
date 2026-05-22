@@ -1,0 +1,30 @@
+# Web 框架
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+
+# 配置与数据校验
+pydantic==2.9.2
+pydantic-settings==2.6.0
+python-dotenv==1.0.1
+
+# LLM 调用（豆包 API 兼容 OpenAI 协议）
+openai==1.54.0
+httpx==0.27.2
+
+# 向量库
+chromadb==0.5.18
+
+# 关系存储（购物车/会话）
+aiosqlite==0.20.0
+
+# 图片处理（拍照找货预处理）
+pillow==11.0.0
+
+# BM25 召回（第二阶段）
+rank-bm25==0.2.2
+
+# Reranker（第二阶段）
+sentence-transformers==3.2.1
+
+# 工具
+python-multipart==0.0.12
