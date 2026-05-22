@@ -59,12 +59,28 @@ class DoubaoClient:
         return resp.choices[0].message.content or ""
 
     async def embed_text(self, texts: list[str]) -> list[list[float]]:
-        """文本向量化 — 批量"""
-        resp = await self._client.embeddings.create(
-            model=settings.doubao_embedding_model,
-            input=texts,
-        )
-        return [d.embedding for d in resp.data]
+        """
+        文本向量化 — 批量。
+        doubao-embedding-vision 使用 /embeddings/multimodal 接口，
+        不支持标准 OpenAI /embeddings 接口，改用 httpx 直连。
+        """
+        url = f"{settings.doubao_base_url.rstrip('/')}/embeddings/multimodal"
+        headers = {
+            "Authorization": f"Bearer {settings.doubao_api_key}",
+            "Content-Type": "application/json",
+        }
+        results = []
+        for text in texts:
+            payload = {
+                "model": settings.doubao_embedding_model,
+                "input": [{"type": "text", "text": text}],
+            }
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+            results.append(data["data"]["embedding"])
+        return results
 
     async def embed_image(self, image_base64: str, mime_type: str = "image/jpeg") -> list[float]:
         """
@@ -89,7 +105,7 @@ class DoubaoClient:
             resp = await client.post(url, headers=headers, json=payload)
             resp.raise_for_status()
             data = resp.json()
-        return data["data"][0]["embedding"]
+        return data["data"]["embedding"]
 
 
 # 全局单例
