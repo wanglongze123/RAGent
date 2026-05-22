@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     # ===== 数据集 =====
     dataset_dir: str = "../ecommerce_agent_dataset"
 
+    # ===== Reranker =====
+    reranker_model_path: str = "./models/Xorbits/bge-reranker-base"
+    reranker_enabled: bool = True
+
     # ===== 服务 =====
     host: str = "0.0.0.0"
     port: int = 8000

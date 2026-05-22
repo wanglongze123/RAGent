@@ -11,6 +11,8 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.db.product_repo import product_repo
 from app.db.vector_store import get_vector_store
+from app.rag.bm25_retriever import bm25_retriever
+from app.rag.reranker import reranker
 from app.api import chat
 
 
@@ -24,9 +26,18 @@ async def lifespan(app: FastAPI):
     print(f"[startup] 商品仓库: 已加载 {n} 条商品")
 
     vs = get_vector_store("products")
-    print(f"[startup] 向量库: 当前 chunk 数量 = {vs.count()}")
-    if vs.count() == 0:
+    chunk_count = vs.count()
+    print(f"[startup] 向量库: 当前 chunk 数量 = {chunk_count}")
+    if chunk_count == 0:
         print("[startup] ⚠ 向量库为空，请先运行: python -m scripts.build_index")
+    else:
+        # 从 Chroma 加载全量 chunk 构建 BM25 索引
+        chroma_collection = vs._collection
+        n_bm25 = bm25_retriever.build_from_chroma(chroma_collection)
+        print(f"[startup] BM25 索引: 已构建，共 {n_bm25} 个 chunk")
+
+    mode = reranker.load()
+    print(f"[startup] Reranker: {mode}")
 
     yield
 

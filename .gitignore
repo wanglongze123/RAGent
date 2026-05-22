@@ -51,3 +51,4 @@ client/**/.idea/
 *.swo
 
 # 数据集直接提交（100条JSON + 100张图，体积可控）
+server/models/

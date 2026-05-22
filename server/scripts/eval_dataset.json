@@ -1,0 +1,35 @@
+[
+  {"query_id": "q001", "query": "推荐适合油皮的洗面奶", "relevant_ids": ["p_beauty_011"], "difficulty": "basic", "category": "美妆护肤"},
+  {"query_id": "q002", "query": "敏感肌修护屏障面霜", "relevant_ids": ["p_beauty_007", "p_beauty_012"], "difficulty": "basic", "category": "美妆护肤"},
+  {"query_id": "q003", "query": "抗初老精华液", "relevant_ids": ["p_beauty_001", "p_beauty_002", "p_beauty_004", "p_beauty_024"], "difficulty": "basic", "category": "美妆护肤"},
+  {"query_id": "q004", "query": "控油定妆蜜粉", "relevant_ids": ["p_beauty_013", "p_beauty_014"], "difficulty": "basic", "category": "美妆护肤"},
+  {"query_id": "q005", "query": "防晒霜推荐", "relevant_ids": ["p_beauty_006", "p_beauty_010", "p_beauty_023"], "difficulty": "basic", "category": "美妆护肤"},
+  {"query_id": "q006", "query": "卸妆油深层清洁", "relevant_ids": ["p_beauty_017"], "difficulty": "basic", "category": "美妆护肤"},
+  {"query_id": "q007", "query": "SK-II神仙水", "relevant_ids": ["p_beauty_003"], "difficulty": "basic", "category": "美妆护肤"},
+  {"query_id": "q008", "query": "烟酰胺精华提亮肤色", "relevant_ids": ["p_beauty_018"], "difficulty": "basic", "category": "美妆护肤"},
+
+  {"query_id": "q009", "query": "苹果iPhone手机推荐", "relevant_ids": ["p_digital_001", "p_digital_003"], "difficulty": "basic", "category": "数码电子"},
+  {"query_id": "q010", "query": "华为笔记本电脑", "relevant_ids": ["p_digital_004"], "difficulty": "basic", "category": "数码电子"},
+  {"query_id": "q011", "query": "主动降噪无线蓝牙耳机", "relevant_ids": ["p_digital_007", "p_digital_018"], "difficulty": "basic", "category": "数码电子"},
+  {"query_id": "q012", "query": "折叠屏手机", "relevant_ids": ["p_digital_010", "p_digital_014"], "difficulty": "basic", "category": "数码电子"},
+  {"query_id": "q013", "query": "iPad平板电脑", "relevant_ids": ["p_digital_013", "p_digital_024", "p_digital_025"], "difficulty": "basic", "category": "数码电子"},
+  {"query_id": "q014", "query": "轻薄MacBook笔记本", "relevant_ids": ["p_digital_020"], "difficulty": "basic", "category": "数码电子"},
+  {"query_id": "q015", "query": "小米平板", "relevant_ids": ["p_digital_011"], "difficulty": "basic", "category": "数码电子"},
+  {"query_id": "q016", "query": "4000元以下安卓手机", "relevant_ids": ["p_digital_016"], "difficulty": "medium", "category": "数码电子"},
+
+  {"query_id": "q017", "query": "跑步鞋推荐", "relevant_ids": ["p_clothes_007", "p_clothes_008", "p_clothes_009", "p_clothes_010"], "difficulty": "basic", "category": "服饰运动"},
+  {"query_id": "q018", "query": "Nike运动长裤", "relevant_ids": ["p_clothes_006"], "difficulty": "basic", "category": "服饰运动"},
+  {"query_id": "q019", "query": "实战篮球鞋", "relevant_ids": ["p_clothes_011", "p_clothes_012", "p_clothes_013"], "difficulty": "basic", "category": "服饰运动"},
+  {"query_id": "q020", "query": "速干跑步T恤", "relevant_ids": ["p_clothes_020", "p_clothes_021"], "difficulty": "basic", "category": "服饰运动"},
+  {"query_id": "q021", "query": "防水登山徒步鞋", "relevant_ids": ["p_clothes_014", "p_clothes_015"], "difficulty": "basic", "category": "服饰运动"},
+  {"query_id": "q022", "query": "女士瑜伽裤", "relevant_ids": ["p_clothes_016"], "difficulty": "basic", "category": "服饰运动"},
+  {"query_id": "q023", "query": "户外登山背包", "relevant_ids": ["p_clothes_018", "p_clothes_025"], "difficulty": "basic", "category": "服饰运动"},
+  {"query_id": "q024", "query": "连帽卫衣推荐", "relevant_ids": ["p_clothes_005", "p_clothes_022"], "difficulty": "basic", "category": "服饰运动"},
+
+  {"query_id": "q025", "query": "精品速溶咖啡", "relevant_ids": ["p_food_001", "p_food_022", "p_food_023"], "difficulty": "basic", "category": "食品生活"},
+  {"query_id": "q026", "query": "无糖气泡水饮料", "relevant_ids": ["p_food_004", "p_food_024"], "difficulty": "basic", "category": "食品生活"},
+  {"query_id": "q027", "query": "功能饮料补充能量", "relevant_ids": ["p_food_005", "p_food_006"], "difficulty": "basic", "category": "食品生活"},
+  {"query_id": "q028", "query": "混合坚果每日坚果", "relevant_ids": ["p_food_009", "p_food_019"], "difficulty": "basic", "category": "食品生活"},
+  {"query_id": "q029", "query": "红烧牛肉方便面", "relevant_ids": ["p_food_011", "p_food_021"], "difficulty": "basic", "category": "食品生活"},
+  {"query_id": "q030", "query": "纯牛奶推荐", "relevant_ids": ["p_food_007", "p_food_016"], "difficulty": "basic", "category": "食品生活"}
+]

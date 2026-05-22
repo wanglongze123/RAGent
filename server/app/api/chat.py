@@ -22,7 +22,7 @@ from fastapi.responses import StreamingResponse
 
 from app.models import ChatRequest, SessionCreateResponse
 from app.models import events as ev
-from app.rag.retriever import retriever
+from app.rag.hybrid_retriever import hybrid_retriever as retriever
 from app.db.product_repo import product_repo
 from app.llm.client import llm_client
 
