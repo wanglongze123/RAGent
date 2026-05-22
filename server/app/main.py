@@ -13,6 +13,7 @@ from app.db.product_repo import product_repo
 from app.db.vector_store import get_vector_store
 from app.rag.bm25_retriever import bm25_retriever
 from app.rag.reranker import reranker
+from app.db.relational import init_db
 from app.api import chat
 
 
@@ -21,6 +22,9 @@ async def lifespan(app: FastAPI):
     """应用启动时加载商品数据，关闭时清理"""
     print(f"[startup] 环境: {settings.environment}")
     print(f"[startup] 数据集路径: {settings.dataset_path}")
+
+    await init_db()
+    print("[startup] SQLite: 数据库初始化完成")
 
     n = product_repo.load()
     print(f"[startup] 商品仓库: 已加载 {n} 条商品")
