@@ -48,13 +48,14 @@ class DoubaoClient:
         temperature: float = 0.0,
         response_format: Optional[dict] = None,
     ) -> str:
-        """非流式生成 — 用于意图分类等需要完整 JSON 输出的场景"""
+        """非流式生成 — 用于意图分类等需要完整 JSON 输出的场景。
+        Doubao-Seed-2.0-lite 不支持 response_format json_object，忽略该参数。
+        """
         resp = await self._client.chat.completions.create(
             model=settings.doubao_model,
             messages=messages,
             stream=False,
             temperature=temperature,
-            response_format=response_format,
         )
         return resp.choices[0].message.content or ""
 

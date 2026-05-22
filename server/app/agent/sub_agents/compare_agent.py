@@ -39,7 +39,7 @@ class CompareAgent:
 
         if len(product_ids) < 2:
             yield ev.text_delta(
-                "请告诉我您想对比哪两款商品，例如"对比雅诗兰黛小棕瓶和SK-II神仙水"。"
+                "请告诉我您想对比哪两款商品，例如：对比雅诗兰黛小棕瓶和SK-II神仙水。"
             ).to_sse()
             return
 

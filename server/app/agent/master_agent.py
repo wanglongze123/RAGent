@@ -75,6 +75,12 @@ class MasterAgent:
         needs_clarify = intent_result.get("clarification_needed", False)
         clarify_question = intent_result.get("clarification_question", "")
 
+        # 后处理：把"第一个"等位置指代解析成真实 product_id
+        # 模型常把 product_id 输出成 "1" 或 "第一个"，不靠它解析，代码兜底
+        params = _resolve_position_reference(params, session.get("last_shown_products", []))
+
+        print(f"[master] intent={intent} params={params} last_shown={[p.get('product_id') for p in session.get('last_shown_products', [])][:5]}")
+
         # ── 5. 需要反问时直接推 clarification 事件 ──────────
         if needs_clarify and clarify_question:
             options = self._build_clarify_options(intent, params)
@@ -86,8 +92,10 @@ class MasterAgent:
         next_state = get_next_state(current_state, intent)
         agent_name = _INTENT_TO_AGENT.get(intent, "search")
 
-        # ── 7. 校验当前状态是否允许该子 Agent ──────────────
-        if not is_agent_allowed(current_state, agent_name):
+        # ── 7. 校验子 Agent 是否被允许 ──────────────────────
+        # 用 next_state 校验：意图若触发了合法状态转移，
+        # 就用新状态判断 agent 权限（如 browsing→cart_management 后 cart agent 可用）
+        if not is_agent_allowed(next_state, agent_name):
             yield ev.text_delta(
                 "当前阶段暂时无法处理该请求，请先完成当前流程。"
             ).to_sse()
@@ -95,7 +103,8 @@ class MasterAgent:
             return
 
         # ── 8. 路由到子 Agent，收集展示的商品 ──────────────
-        shown_products: list[dict] = list(session.get("last_shown_products", []))
+        old_shown: list[dict] = list(session.get("last_shown_products", []))
+        new_shown: list[dict] = []   # 本轮推出的商品（累积所有 product_card 事件）
         assistant_text = []
 
         async for event_str in self._dispatch(
@@ -103,16 +112,24 @@ class MasterAgent:
         ):
             yield event_str
 
-            # 从 product_card 事件里提取商品 ID，更新 last_shown_products
-            new_products = _extract_products_from_event(event_str)
-            if new_products:
-                shown_products = new_products   # 每轮推荐刷新，不累积
+            # 累积本轮所有 product_card / product_card_list 事件里的商品
+            extracted = _extract_products_from_event(event_str)
+            if extracted:
+                new_shown.extend(extracted)
 
             # 收集文本用于存对话历史
             if '"text":' in event_str and "text_delta" in event_str:
                 token = _extract_text_delta(event_str)
                 if token:
                     assistant_text.append(token)
+
+        # 本轮有新商品则用新的，否则保留上一轮的（购物车/下单等不展示商品的操作）
+        if new_shown:
+            for i, p in enumerate(new_shown):
+                p["rank"] = i + 1
+            shown_products = new_shown
+        else:
+            shown_products = old_shown
 
         # ── 9. 更新会话状态 ────────────────────────────────
         await update_session_state(
@@ -229,6 +246,37 @@ def _extract_products_from_event(event_str: str) -> list[dict]:
                     "title": p.get("title", ""),
                 })
     return products
+
+
+# 中文位置词 → 排名映射
+_POSITION_WORDS: dict[str, int] = {
+    "第一": 1, "第一个": 1, "第一款": 1, "第1个": 1, "第1款": 1,
+    "第二": 2, "第二个": 2, "第二款": 2, "第2个": 2, "第2款": 2,
+    "第三": 3, "第三个": 3, "第三款": 3, "第3个": 3, "第3款": 3,
+    "第四": 4, "第四个": 4, "第四款": 4, "第4个": 4, "第4款": 4,
+    "第五": 5, "第五个": 5, "第五款": 5, "第5个": 5, "第5款": 5,
+}
+
+
+def _resolve_position_reference(params: dict, last_shown: list[dict]) -> dict:
+    """
+    模型经常把 product_id 输出成 "1" 或 "第一个"。
+    这里做代码层兜底解析：把数字/位置词转成真实 product_id。
+    """
+    pid = params.get("product_id")
+    if not pid or not isinstance(pid, str):
+        return params
+
+    pos: int | None = None
+    if pid.isdigit():
+        pos = int(pid)
+    elif pid in _POSITION_WORDS:
+        pos = _POSITION_WORDS[pid]
+
+    if pos is not None and 1 <= pos <= len(last_shown):
+        params["product_id"] = last_shown[pos - 1].get("product_id", "")
+
+    return params
 
 
 def _extract_text_delta(event_str: str) -> str:

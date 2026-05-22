@@ -108,18 +108,22 @@ class ToolMiddleware:
         """
         t0 = time.time()
         messages = self._build_messages(agent_name, user_messages, prompt_vars)
-        response_format = {"type": "json_object"} if json_mode else None
+
+        # Doubao-Seed-2.0-lite 不支持 response_format json_object
+        # 改用 Prompt 强制：在最后一条 user 消息末尾追加 JSON 指令
+        if json_mode:
+            messages = self._inject_json_instruction(messages)
 
         result = await llm_client.chat(
             messages=messages,
             temperature=temperature,
-            response_format=response_format,
         )
 
         elapsed = round((time.time() - t0) * 1000)
         print(f"[middleware] {agent_name} chat {elapsed}ms")
 
         if json_mode:
+            result = self._extract_json(result)
             return self._validate_json(agent_name, result)
         return result
 
@@ -165,6 +169,31 @@ class ToolMiddleware:
             system_content = template
 
         return [{"role": "system", "content": system_content}] + user_messages
+
+    def _inject_json_instruction(self, messages: list[dict]) -> list[dict]:
+        """在最后一条 user 消息末尾追加 JSON 输出指令"""
+        messages = list(messages)
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i]["role"] == "user":
+                messages[i] = dict(messages[i])
+                messages[i]["content"] += "\n\n【重要】请只输出 JSON，不要任何解释、前缀或代码块标记。"
+                break
+        return messages
+
+    def _extract_json(self, raw: str) -> str:
+        """从模型输出中提取 JSON，处理可能的 markdown 代码块包裹"""
+        import re
+        raw = raw.strip()
+        # 去掉 ```json ... ``` 或 ``` ... ``` 包裹
+        match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", raw)
+        if match:
+            return match.group(1).strip()
+        # 尝试找第一个 { 到最后一个 }
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return raw[start:end + 1]
+        return raw
 
     def _validate_json(self, agent_name: str, raw: str) -> str:
         """

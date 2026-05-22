@@ -112,7 +112,7 @@ class OrderAgent:
                 order_info["confirmed_cart"] = True
                 yield ev.text_delta("好的！请问收货人姓名是？").to_sse()
             else:
-                yield ev.text_delta("请确认是否下单（回复"确认"继续）。").to_sse()
+                yield ev.text_delta("请确认是否下单（回复 确认 继续）。").to_sse()
         else:
             name = message.strip()
             if len(name) < 2:
