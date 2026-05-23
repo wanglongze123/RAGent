@@ -3,8 +3,10 @@
 
 用法：
     cd server
-    python -m scripts.build_index           # 增量：只补已有 collection 缺的
-    python -m scripts.build_index --rebuild # 全量重建：先 reset 再灌
+    python -m scripts.build_index                 # 增量：只补已有 collection 缺的
+    python -m scripts.build_index --rebuild       # 全量重建文本索引：先 reset 再灌
+    python -m scripts.build_index --with-images   # 同时建/更新图片索引（独立 collection）
+    python -m scripts.build_index --images-only   # 只建图片索引，不动文本
 
 Chunking 策略（数据集天然分层）：
   - 1 个 chunk: marketing_description（核心卖点长文）
@@ -13,9 +15,16 @@ Chunking 策略（数据集天然分层）：
 
 每个 chunk 入库时 metadata 包含 product_id / chunk_type / category / brand /
 sub_category / price，方便后续做 metadata 过滤（价格区间、品牌排除等）。
+
+图片索引（--with-images）：
+  - 独立 collection: product_images（与文本 collection 分开）
+  - 每个商品 1 个图向量（embed_image(image_path)）
+  - id: {product_id}_image
+  - Doubao 文本和图片走同一 multimodal endpoint，向量空间对齐
 """
 import argparse
 import asyncio
+import base64
 import json
 import sys
 from pathlib import Path
@@ -144,8 +153,71 @@ async def build_index(rebuild: bool = False):
     print(f"\n✅ 完成。最终 collection 数量: {vs.count()}")
 
 
+async def build_image_index(rebuild: bool = False):
+    """
+    为每个商品的 live 图建独立 chroma collection: product_images。
+    Doubao 多模态 endpoint 让图片向量和文本向量在同一空间，所以图搜命中后
+    可以直接用商品 id 关联回 product_repo / 文本资料。
+    """
+    print(f"[image 1/3] 加载数据集: {settings.dataset_path}")
+    products = load_all_products()
+    print(f"  ✓ 共 {len(products)} 个商品")
+
+    print(f"[image 2/3] 初始化图片向量库 (collection=product_images)")
+    vs_img = get_vector_store("product_images")
+    if rebuild:
+        vs_img.reset()
+        print("  ✓ 已清空 collection")
+    print(f"  ✓ 当前数量: {vs_img.count()}")
+
+    print(f"[image 3/3] 逐商品 embed_image 并入库")
+    skipped, embedded, missing = 0, 0, 0
+    for i, p in enumerate(products, start=1):
+        img_path = settings.dataset_path / p.image_path
+        if not img_path.exists():
+            print(f"  [{i}/{len(products)}] {p.product_id} 图片缺失: {img_path}")
+            missing += 1
+            continue
+        try:
+            with open(img_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("ascii")
+            vec = await llm_client.embed_image(b64, mime_type="image/jpeg")
+            vs_img.add(
+                ids=[f"{p.product_id}_image"],
+                embeddings=[vec],
+                # document 字段存"商品标题"做兜底人类可读，纯检索时用不到
+                documents=[p.title],
+                metadatas=[{
+                    "product_id": p.product_id,
+                    "title": p.title,
+                    "brand": p.brand,
+                    "category": p.category,
+                    "sub_category": p.sub_category,
+                    "base_price": p.base_price,
+                    "region": p.region or "",
+                }],
+            )
+            embedded += 1
+            print(f"  [{i}/{len(products)}] {p.product_id} ✓")
+        except Exception as e:
+            skipped += 1
+            print(f"  [{i}/{len(products)}] {p.product_id} ✗ {e}")
+
+    print(f"\n✅ 图片索引完成: 入库 {embedded}，跳过 {skipped}，缺图 {missing}")
+    print(f"   collection 最终数量: {vs_img.count()}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--rebuild", action="store_true", help="全量重建索引")
+    parser.add_argument("--rebuild", action="store_true", help="全量重建文本索引")
+    parser.add_argument("--with-images", action="store_true", help="同时建/更新图片索引")
+    parser.add_argument("--images-only", action="store_true", help="只建图片索引")
     args = parser.parse_args()
-    asyncio.run(build_index(rebuild=args.rebuild))
+
+    async def _main():
+        if not args.images_only:
+            await build_index(rebuild=args.rebuild)
+        if args.with_images or args.images_only:
+            await build_image_index(rebuild=args.rebuild)
+
+    asyncio.run(_main())

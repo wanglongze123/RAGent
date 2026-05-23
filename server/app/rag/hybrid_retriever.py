@@ -95,6 +95,13 @@ class HybridRetriever:
 
     def __init__(self):
         self._vs = get_vector_store("products")
+        # 图片向量库延迟初始化，因为可能没建（避免启动报错）
+        self._vs_images = None
+
+    def _get_image_store(self):
+        if self._vs_images is None:
+            self._vs_images = get_vector_store("product_images")
+        return self._vs_images
 
     async def retrieve(
         self,
@@ -203,6 +210,49 @@ class HybridRetriever:
                 reranked_products.append(p)
 
         return reranked_products
+
+
+    async def retrieve_by_image(
+        self,
+        image_base64: str,
+        top_k: int = 5,
+        where: Optional[dict[str, Any]] = None,
+        mime_type: str = "image/jpeg",
+    ) -> list[dict[str, Any]]:
+        """
+        以图搜图：用户上传图 → embed_image → 查 product_images collection。
+
+        与文本检索的关键差异：
+          - 不走 BM25（图片没文本）
+          - 不走 reranker（BGE 是文本 reranker，图文打分算不出来）
+          - 不走 chunk 聚合（每个商品本来就只有一张图）
+        所以这条管道是单路向量召回，命中后直接按相似度返回 product_id。
+
+        返回结构与 retrieve_products 兼容：
+          [{"product_id", "score", "metadata", "hit_chunks": []}]
+        hit_chunks 留空，调用方（search_agent）想拿文本资料的话可以再去 product_repo 取。
+        """
+        vs_img = self._get_image_store()
+        if vs_img.count() == 0:
+            # 图片索引为空 → 上层应该提示用户跑 build_index --with-images
+            return []
+
+        vec = await llm_client.embed_image(image_base64, mime_type=mime_type)
+        hits = vs_img.query(
+            query_embedding=vec,
+            top_k=top_k,
+            where=where,
+        )
+        # 同一 product 在 image collection 里只有 1 条，所以不需去重
+        return [
+            {
+                "product_id": h["metadata"]["product_id"],
+                "score": h["score"],
+                "metadata": h["metadata"],
+                "hit_chunks": [],
+            }
+            for h in hits
+        ]
 
 
 hybrid_retriever = HybridRetriever()

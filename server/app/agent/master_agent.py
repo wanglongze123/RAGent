@@ -61,19 +61,27 @@ class MasterAgent:
         current_state = AgentState(session.get("agent_state", "browsing"))
 
         # ── 2. 保存用户消息到历史 ──────────────────────────
-        await add_message(session_id, "user", message)
+        await add_message(session_id, "user", message or ("[图片]" if image_base64 else ""))
 
         # ── 3. 推 thinking 事件（用户立刻看到反馈）──────────
         yield ev.thinking("正在理解您的需求...").to_sse()
 
-        # ── 4. 意图分类 ────────────────────────────────────
         history = await get_recent_messages(session_id, limit=10)
-        intent_result = await self._classify_intent(message, history, session)
 
-        intent = intent_result.get("intent", "search")
-        params = intent_result.get("params", {})
-        needs_clarify = intent_result.get("clarification_needed", False)
-        clarify_question = intent_result.get("clarification_question", "")
+        # 图搜捷径：用户传了图，直接走 search 意图，跳过 LLM 意图分类
+        # 因为图在文本意图分类里没法表达，LLM 看到的是空 message 或简短文字
+        if image_base64:
+            intent = "search"
+            params = {"query": message or ""}
+            needs_clarify = False
+            clarify_question = ""
+        else:
+            # ── 4. 意图分类 ────────────────────────────────────
+            intent_result = await self._classify_intent(message, history, session)
+            intent = intent_result.get("intent", "search")
+            params = intent_result.get("params", {})
+            needs_clarify = intent_result.get("clarification_needed", False)
+            clarify_question = intent_result.get("clarification_question", "")
 
         # 后处理：把"第一个"等位置指代解析成真实 product_id
         params = _resolve_position_reference(

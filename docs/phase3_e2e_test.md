@@ -160,11 +160,39 @@
 ### 4.3 空 session 直接加购
 - 新建 session 直接 `把第一个加入购物车` → "请告诉我您想加购哪款商品？"，state→cart_management ✓
 
-## 阶段 5 ⏳ 多模态图搜（链路未接通）
+## 阶段 5 ✅ 多模态图搜
 
-- ✅ `llm_client.embed_image`（Doubao 多模态 endpoint）已实现
-- ✅ chat.py / master / search_agent 接了 `image_base64` 入参
-- ❌ **search_agent 拿到 image_base64 后没用**：没调 embed_image，没接进 retriever
-- ❌ hybrid_retriever / vector_store 没有图搜入口
+### 架构（独立 collection 路线）
 
-需要补：search_agent 在 image_base64 非空时改走 embed_image → vector_store 图搜分支；vector_store 需要图片向量索引或同库混合查询。
+- 关键观察：Doubao 的 `embed_text` 和 `embed_image` 都走 `/embeddings/multimodal`，文本向量与图片向量在**同一空间**，可以直接互查
+- 路线选择：图片单独建 chroma collection `product_images`（每商品 1 个图向量），与文本 collection 隔离 —— 模态不污染、独立可调
+- 数据流：
+  1. `scripts/build_index.py --with-images` 把每个商品的 live 图 base64 → `embed_image` → 入 `product_images`
+  2. `hybrid_retriever.retrieve_by_image(image_base64, top_k)` 单路向量召回（不走 BM25/reranker，因为图片没文本可打分）
+  3. `search_agent.run()` 检测到 `image_base64` 入参 → 推 `image_searching` 事件 → 调上述方法 → 共用商品卡 + 推荐理由的下游逻辑
+  4. `master_agent.run()` 检测到图直接走 search 意图，跳过 LLM 意图分类（图在文本分类里没法表达）
+
+### 三场景测试
+
+| 场景 | 输入图 | 期望 | 实际 Top-5 |
+|---|---|---|---|
+| 1 同图召回 | `p_beauty_018_live.jpg`（The Ordinary 烟酰胺精华） | 自己排第 1 | ✅ p_beauty_018 / 科颜氏精华 / 雅诗兰黛精华 / 兰蔻精华 / SK-II — 全部精华类 |
+| 2 食品 | `p_food_001_live.jpg`（三顿半咖啡） | 同品类聚集 | ✅ p_food_001 / 三顿半冷萃 / 雀巢三合一 / 雀巢冻干 / 三只松鼠坚果 — 4/5 是咖啡 |
+| 3 服饰 | `p_clothes_005_live.jpg`（李宁卫衣） | 同品类聚集 | ✅ p_clothes_005 / 阿迪卫衣 / Nike T恤 / 联想笔记本 / 优衣库 T恤 — 4/5 是上衣（笔记本属深色产品图相似度噪声） |
+
+### 修复点 / 注意
+
+- `master_agent` 在 image_base64 非空时跳过 `_classify_intent`，否则空 message 让 LLM 分意图会失败
+- 推荐理由在图搜场景下用 `product.rag_knowledge.marketing_description` 作为 LLM 上下文（hit_chunks 是空的）
+- 图搜走品牌硬过滤；属性过滤需要 chunk 文本，跳过
+- 客户端断流时图搜路径同样会即时持久化 last_shown（沿用阶段 0.7 的修复）
+
+### 已知限制
+
+- Doubao 多模态 embedding 在跨品类的"产品照"场景下相似度会受**背景色/构图**影响（测试 3 的笔记本干扰）。生产可用 reranker 模型（如 jina-clip-v2）做二阶段 rerank
+- `embed_image` 的 100 张索引耗时 ~50s，新商品要重跑（增量化未做）
+
+### 工具
+
+- `python -m scripts.build_index --images-only` 只重建图片索引（幂等 upsert）
+- `python -m scripts.build_index --with-images` 文本+图片一起建

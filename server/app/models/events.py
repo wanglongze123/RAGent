@@ -103,6 +103,10 @@ def cart_update(
     )
 
 
+def image_searching(message: str = "正在分析图片…") -> SSEEvent:
+    return SSEEvent(type=EventType.IMAGE_SEARCHING, data={"message": message})
+
+
 def clarification(question: str, options: list[str]) -> SSEEvent:
     return SSEEvent(
         type=EventType.CLARIFICATION,

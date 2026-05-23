@@ -45,33 +45,50 @@ class SearchAgent:
         # 价格区间 → Chroma metadata filter
         where = _build_price_filter(price_max, price_min)
 
-        # ── Step 2: 告知用户正在检索 ────────────────────────
-        yield ev.tool_progress("hybrid_search", "正在为您检索相关商品...").to_sse()
-
-        # ── Step 3: 混合检索 ─────────────────────────────────
-        # 有排除条件时多取一些候选，过滤后保证够 5 个
         top_k = 5
-        fetch_k = top_k * 2 if (excl_brands or excl_attrs) else top_k
 
-        ranked = await hybrid_retriever.retrieve_products(
-            query=query,
-            top_k_chunks=fetch_k * 3,
-            top_k_products=fetch_k,
-            where=where,
-        )
+        # ── Step 2-3: 检索（图搜 / 文本检索分两条路）────────
+        if image_base64:
+            yield ev.image_searching("正在分析图片…").to_sse()
+            try:
+                ranked = await hybrid_retriever.retrieve_by_image(
+                    image_base64=image_base64,
+                    top_k=top_k * 2 if excl_brands else top_k,
+                    where=where,
+                )
+            except Exception as e:
+                yield ev.text_delta(f"图片识别失败：{e}").to_sse()
+                return
+            if not ranked:
+                yield ev.text_delta(
+                    "图片索引为空或没找到匹配商品。请确认服务端跑过 `python -m scripts.build_index --with-images`。"
+                ).to_sse()
+                return
+            # 图搜场景下走 brand 硬过滤；attr 过滤需要 chunk 文本，跳过
+            if excl_brands:
+                ranked = _filter_brands(ranked, excl_brands)
+        else:
+            yield ev.tool_progress("hybrid_search", "正在为您检索相关商品...").to_sse()
+            fetch_k = top_k * 2 if (excl_brands or excl_attrs) else top_k
+            ranked = await hybrid_retriever.retrieve_products(
+                query=query,
+                top_k_chunks=fetch_k * 3,
+                top_k_products=fetch_k,
+                where=where,
+            )
+            if excl_brands:
+                ranked = _filter_brands(ranked, excl_brands)
+            if excl_attrs:
+                ranked = _filter_attrs(ranked, excl_attrs)
 
-        # ── Step 4: 后处理过滤（品牌排除 + 属性排除）────────
-        if excl_brands:
-            ranked = _filter_brands(ranked, excl_brands)
-        if excl_attrs:
-            ranked = _filter_attrs(ranked, excl_attrs)
         ranked = ranked[:top_k]
-
         if not ranked:
-            yield ev.text_delta("抱歉，根据您的条件暂时没有找到合适的商品，您可以调整一下筛选条件试试。").to_sse()
+            yield ev.text_delta(
+                "抱歉，根据您的条件暂时没有找到合适的商品，您可以调整一下筛选条件试试。"
+            ).to_sse()
             return
 
-        # ── Step 5: 推商品卡片 ───────────────────────────────
+        # ── Step 4: 推商品卡片 ───────────────────────────────
         # 关键：卡片字段全从 product_repo 取，不经大模型，杜绝价格/标题幻觉
         context_parts: list[str] = []
         for rp in ranked:
@@ -88,13 +105,20 @@ class SearchAgent:
                 sub_category=product.sub_category,
             ).to_sse()
 
-            # 给 LLM 的资料：标题 + 最相关的 3 个 chunk
-            chunk_texts = "\n".join(c.content for c in rp["hit_chunks"][:3])
+            # 给 LLM 的资料：标题 + 最相关的 chunk（文本检索）/ 营销描述（图搜）
+            if rp.get("hit_chunks"):
+                chunk_texts = "\n".join(c.content for c in rp["hit_chunks"][:3])
+            else:
+                # 图搜场景没 chunk，从 product_repo 取 marketing_description 兜底
+                mk = ""
+                if product.rag_knowledge:
+                    mk = product.rag_knowledge.marketing_description or ""
+                chunk_texts = mk[:600]
             context_parts.append(
                 f"【{product.title}】\n品牌: {product.brand} | 类目: {product.sub_category}\n{chunk_texts}"
             )
 
-        # ── Step 6: 流式生成推荐理由 ─────────────────────────
+        # ── Step 5: 流式生成推荐理由 ─────────────────────────
         context = "\n\n---\n\n".join(context_parts)
 
         # 对话历史从 session 的 recent_messages 取（由 master_agent 在 dispatch 前写入）
@@ -103,8 +127,16 @@ class SearchAgent:
             {"role": m["role"], "content": m["content"]}
             for m in history[-4:]
         ]
-        if not user_messages or user_messages[-1]["content"] != message:
-            user_messages.append({"role": "user", "content": message})
+        # 图搜场景：把"用户传了图"显式告诉模型，不然它对着空白消息生成尴尬
+        # （Doubao 文本模型不接受图本身，所以这里只能用文字暗示）
+        effective_message = message
+        if image_base64 and not message.strip():
+            effective_message = "（用户上传了一张图片，请基于以下检索到的商品介绍它们）"
+        elif image_base64:
+            effective_message = f"（用户上传了一张图片，并说：{message}）"
+
+        if not user_messages or user_messages[-1]["content"] != effective_message:
+            user_messages.append({"role": "user", "content": effective_message})
 
         async for token in middleware.chat_stream(
             agent_name="search",
