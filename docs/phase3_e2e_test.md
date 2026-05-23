@@ -117,11 +117,21 @@
 
 ## 阶段 3 ✅ Search 硬过滤
 
-### 3.1 品牌排除（日系类型映射）
+### 3.1 品牌排除（数据驱动版）
 - **输入**：`推荐美妆护肤品，不要日系的`
-- **修复点 1**：master 加 `_enrich_filters_from_message`，扫用户原话关键词（"不要日系"/"不喜欢日系"/"避开日系"）补 exclude_brands。LLM 经常漏识别
-- **修复点 2**：`_BRAND_CATEGORY_MAP["日系"]` 补全 SK-II
-- **结果**：5 张返回都是欧美品牌（雅诗兰黛/玉兰油/兰蔻×2/科颜氏），无日系 ✓
+- **修复点 1**：master 加 `_enrich_filters_from_message`，扫用户原话关键词（"不要日系"/"不喜欢日系"/"避开日系"）补 exclude_brands
+- **修复点 2 — 关键架构改造**：弃掉 `_BRAND_CATEGORY_MAP` 硬编码字典，改成数据驱动：
+  1. `Product` 模型加 `region` 字段（"日系"/"欧美"/"国产"/"韩系"/"东南亚"）
+  2. `scripts/backfill_region.py` 用一次 LLM 调用为存量 100 商品打地域标签后写回 JSON
+  3. `product_repo` 启动时聚合 `{region: [brand,...]}`，暴露 `regions()` / `brands_in_region()` / `all_region_keywords()`
+  4. `_filter_brands` 改调 `product_repo.brands_in_region("日系")` 动态拿
+  5. master `_enrich_filters_from_message` 也从 `product_repo.all_region_keywords()` 动态拿
+  6. 别名（"国货"→"国产"，"美系"→"欧美"）由 product_repo 集中收口
+- **结果**：3 个验证场景全过
+  - 不要日系：返回欧美/国产，无 SK-II/资生堂/珊珂 ✓
+  - 不要**国货**（别名）：返回 2 张 Apple，无国产 ✓
+  - 不要**韩系**（旧硬编码字典里压根没这一类）：自动从 AHC 这个新地域品牌过滤 ✓
+- **可扩展性**：以后新增任意国家品牌，只需在 product JSON 里写 `"region": "<新地域>"`，零代码修改自动生效。
 
 ### 3.2 价格区间
 - **输入**：`100到500元之间的精华`

@@ -17,14 +17,11 @@ from app.models import events as ev
 from app.rag.hybrid_retriever import hybrid_retriever
 
 
-# 品牌类型关键词 → 实际品牌名映射
-# 用户说"不要日系"，需要映射到数据集里真实的品牌名才能过滤
-_BRAND_CATEGORY_MAP: dict[str, list[str]] = {
-    "日系": ["资生堂", "珊珂", "芳珂", "安热沙", "SK-II"],
-    "欧美": ["雅诗兰黛", "兰蔻", "巴黎欧莱雅", "理肤泉", "玉兰油", "科颜氏", "The Ordinary"],
-    "国产": ["珀莱雅", "花西子", "完美日记", "薇诺娜"],
-    "国货": ["珀莱雅", "花西子", "完美日记", "薇诺娜"],
-}
+# 品牌类型 → 实际品牌名映射改为数据驱动：
+# product_repo 启动时按 product.region 字段聚合 {region: [brand,...]}，
+# 这里调 product_repo.brands_in_region("日系") 就能拿到全部日系品牌，
+# 加新品牌只需要在 product JSON 里写 region，零代码改动。
+# 别名（"国货" → "国产"）也由 product_repo 统一收口。
 
 
 class SearchAgent:
@@ -138,14 +135,17 @@ def _filter_brands(ranked: list[dict], excl_brands: list[str]) -> list[dict]:
     """
     品牌排除过滤。
     用户可能说"不要日系"（类型词）或"不要资生堂"（具体品牌名）。
-    先把类型词展开成具体品牌名，再做精确匹配。
+    先把类型词展开成 product_repo 里该地域的所有品牌，再做精确匹配。
     这一步是硬过滤：代码保证 100% 生效，不依赖模型判断。
     """
     excluded: set[str] = set()
     for b in excl_brands:
-        if b in _BRAND_CATEGORY_MAP:
-            excluded.update(_BRAND_CATEGORY_MAP[b])
+        # 类型词 → 数据库里这个地域下的所有品牌（数据驱动，新增品牌自动生效）
+        regional = product_repo.brands_in_region(b)
+        if regional:
+            excluded.update(regional)
         else:
+            # 不是地域词就当具体品牌名处理
             excluded.add(b)
 
     return [

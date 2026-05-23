@@ -347,8 +347,7 @@ def _resolve_position_reference(
     return params
 
 
-# 关键词兜底：LLM 经常漏识别"不要日系""不含酒精"这类硬过滤
-_BRAND_KEYWORDS = ["日系", "欧美", "国产", "国货"]
+# 属性否定关键词（化妆品/食品成分这类硬过滤词，扩商品类目时按需补）
 _ATTR_NEGATIONS = [
     ("酒精", ["不含酒精", "无酒精", "不要含酒精", "不要酒精"]),
     ("香精", ["不含香精", "无香精", "不要香精", "无香"]),
@@ -357,15 +356,26 @@ _ATTR_NEGATIONS = [
     ("油脂", ["不含油脂", "无油脂"]),
 ]
 
+_BRAND_NEG_PATTERNS = ["不要", "不喜欢", "避开", "排除"]
+
 
 def _enrich_filters_from_message(params: dict, message: str) -> dict:
-    """LLM 给的 exclude_brands/exclude_attrs 经常空，从用户原话里再扫一遍补上"""
+    """
+    LLM 给的 exclude_brands/exclude_attrs 经常空，从用户原话里再扫一遍补上。
+
+    地域关键词从 product_repo 动态拿 —— 数据里有什么 region 就支持什么，
+    新增"韩系/东南亚"这类商品自动生效，不用改代码。
+    """
+    # 延迟导入，避免循环依赖
+    from app.db.product_repo import product_repo
+
     excl_brands = list(params.get("exclude_brands") or [])
     excl_attrs = list(params.get("exclude_attrs") or [])
 
-    # 品牌类型词："不要日系" / "不要欧美的" / "不要国货"
-    for kw in _BRAND_KEYWORDS:
-        if f"不要{kw}" in message or f"不喜欢{kw}" in message or f"避开{kw}" in message:
+    # 地域类型词（含别名）："不要日系" / "避开欧美" / "不要国货"
+    region_keywords = product_repo.all_region_keywords()
+    for kw in region_keywords:
+        if any(f"{neg}{kw}" in message for neg in _BRAND_NEG_PATTERNS):
             if kw not in excl_brands:
                 excl_brands.append(kw)
 

@@ -36,6 +36,7 @@ class Product(BaseModel):
     sub_category: str
     base_price: float
     image_path: str
+    region: Optional[str] = None  # "日系" / "欧美" / "国产" / "韩系" 等，用于硬过滤
     skus: list[SKU] = Field(default_factory=list)
     rag_knowledge: Optional[RagKnowledge] = None
 
