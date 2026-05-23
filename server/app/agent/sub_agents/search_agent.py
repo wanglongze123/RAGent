@@ -100,8 +100,8 @@ class SearchAgent:
         # ── Step 6: 流式生成推荐理由 ─────────────────────────
         context = "\n\n---\n\n".join(context_parts)
 
-        # 带入最近几轮对话历史，让推荐理由能呼应上文
-        history = session.get("_recent_messages", [])
+        # 对话历史从 session 的 recent_messages 取（由 master_agent 在 dispatch 前写入）
+        history = session.get("recent_messages", [])
         user_messages = [
             {"role": m["role"], "content": m["content"]}
             for m in history[-4:]

@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     session_id          TEXT PRIMARY KEY,
     agent_state         TEXT NOT NULL DEFAULT 'browsing',
     last_shown_products TEXT NOT NULL DEFAULT '[]',
+    order_state         TEXT NOT NULL DEFAULT '{}',
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
 );
@@ -73,9 +74,18 @@ CREATE TABLE IF NOT EXISTS order_items (
 
 
 async def init_db() -> None:
-    """应用启动时调用，创建所有表"""
+    """应用启动时调用，创建所有表 + 处理增量迁移"""
     async with aiosqlite.connect(settings.sqlite_db_path) as db:
         await db.executescript(CREATE_TABLES_SQL)
+
+        # 迁移：已存在的 sessions 表补上 order_state 字段
+        cursor = await db.execute("PRAGMA table_info(sessions)")
+        columns = [row[1] for row in await cursor.fetchall()]
+        if "order_state" not in columns:
+            await db.execute(
+                "ALTER TABLE sessions ADD COLUMN order_state TEXT NOT NULL DEFAULT '{}'"
+            )
+
         await db.commit()
 
 
@@ -104,7 +114,26 @@ async def get_session(session_id: str) -> Optional[dict]:
         return None
     d = dict(row)
     d["last_shown_products"] = json.loads(d["last_shown_products"])
+    d["order_state"] = json.loads(d.get("order_state") or "{}")
     return d
+
+
+async def update_order_state(session_id: str, order_state: dict) -> None:
+    """持久化下单流程的临时状态（收货人姓名、电话等）"""
+    async with aiosqlite.connect(settings.sqlite_db_path) as db:
+        await db.execute(
+            "UPDATE sessions SET order_state = ?, updated_at = ? WHERE session_id = ?",
+            (
+                json.dumps(order_state, ensure_ascii=False),
+                datetime.utcnow().isoformat(),
+                session_id,
+            ),
+        )
+        await db.commit()
+
+
+async def clear_order_state(session_id: str) -> None:
+    await update_order_state(session_id, {})
 
 
 async def update_session_state(

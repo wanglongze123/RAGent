@@ -63,12 +63,31 @@ class CartAgent:
         message: str,
     ) -> AsyncIterator[str]:
         """加购处理"""
-        # 从 params 或 last_shown_products 解析目标商品
-        product_id = params.get("product_id")
-        if not product_id:
-            last_shown = session.get("last_shown_products", [])
-            if last_shown:
-                product_id = last_shown[0]["product_id"]
+        order_info = dict(session.get("order_state") or {})
+
+        # 如果上一轮已经问过规格，message 就是用户对规格的回答
+        # 验证 pending 值有效（是真实 product_id），防止旧 session 的脏数据导致崩溃
+        pending = order_info.get("pending_sku_product_id")
+        if pending and not product_repo.get(pending):
+            pending = None
+            order_info.pop("pending_sku_product_id", None)
+            from app.db.relational import update_order_state
+            await update_order_state(session_id, order_info)
+        if pending:
+            product_id = pending
+            params = dict(params)
+            params["sku_selection_reply"] = message   # 传给 SKU 匹配逻辑
+            # 清除 pending 状态
+            order_info.pop("pending_sku_product_id", None)
+            from app.db.relational import update_order_state
+            await update_order_state(session_id, order_info)
+        else:
+            # 从 params 或 last_shown_products 解析目标商品
+            product_id = params.get("product_id")
+            if not product_id:
+                last_shown = session.get("last_shown_products", [])
+                if last_shown:
+                    product_id = last_shown[0]["product_id"]
 
         if not product_id:
             yield ev.text_delta("请告诉我您想加购哪款商品？").to_sse()
@@ -82,14 +101,27 @@ class CartAgent:
         # 解析 SKU
         sku_id = params.get("sku_id")
         if not sku_id:
+            # 用规格关键词匹配（如 "30ml" 匹配 "30ml 标准装"）
+            reply = params.get("sku_selection_reply", "")
+            if reply:
+                for sku in product.skus:
+                    props_str = "/".join(str(v) for v in sku.properties.values())
+                    if any(kw in props_str for kw in reply.split()):
+                        sku_id = sku.sku_id
+                        break
+
+        if not sku_id:
             if len(product.skus) == 1:
                 sku_id = product.skus[0].sku_id
             else:
-                # 多规格时询问用户
+                # 多规格时询问用户，并把 product_id 存入 order_state
                 options = [
-                    f"{'/'.join(v for v in sku.properties.values())} ¥{sku.price}"
+                    f"{'/'.join(str(v) for v in sku.properties.values())} ¥{sku.price}"
                     for sku in product.skus
                 ]
+                order_info["pending_sku_product_id"] = product_id
+                from app.db.relational import update_order_state
+                await update_order_state(session_id, order_info)
                 yield ev.clarification(
                     question=f"请问您需要哪个规格的 {product.title}？",
                     options=options,

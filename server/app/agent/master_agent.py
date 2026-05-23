@@ -76,8 +76,23 @@ class MasterAgent:
         clarify_question = intent_result.get("clarification_question", "")
 
         # 后处理：把"第一个"等位置指代解析成真实 product_id
-        # 模型常把 product_id 输出成 "1" 或 "第一个"，不靠它解析，代码兜底
-        params = _resolve_position_reference(params, session.get("last_shown_products", []))
+        params = _resolve_position_reference(
+            params, session.get("last_shown_products", []), message
+        )
+
+        # 特殊路由：在 cart_management 状态下的 clarify 意图应路由到 cart
+        if intent == "clarify" and current_state == AgentState.CART_MANAGEMENT:
+            intent = "cart_add"
+            if not params.get("cart_action"):
+                params["cart_action"] = "add"
+
+        # 特殊路由：在 checkout 状态下，所有消息都路由到 order agent
+        # 用户在填收货信息时说"张三""13800138000"等会被分类成 chitchat/clarify
+        # 但这些都是 order agent 需要处理的回答，不能被拒绝。
+        # 同时强制 needs_clarify=False，避免被 master 的反问分支拦截。
+        if current_state == AgentState.CHECKOUT:
+            intent = "checkout"
+            needs_clarify = False
 
         print(f"[master] intent={intent} params={params} last_shown={[p.get('product_id') for p in session.get('last_shown_products', [])][:5]}")
 
@@ -107,6 +122,12 @@ class MasterAgent:
         new_shown: list[dict] = []   # 本轮推出的商品（累积所有 product_card 事件）
         assistant_text = []
 
+        # 把最近对话历史注入 session dict，子 Agent 可以直接用
+        session["recent_messages"] = history
+
+        # 商品卡是否已即时持久化过（避免客户端中途断开导致 last_shown 丢失）
+        last_shown_persisted = False
+
         async for event_str in self._dispatch(
             agent_name, session_id, message, params, session, image_base64
         ):
@@ -116,6 +137,18 @@ class MasterAgent:
             extracted = _extract_products_from_event(event_str)
             if extracted:
                 new_shown.extend(extracted)
+                # 即时持久化：搜索/对比阶段商品卡推完后客户端可能在推荐理由
+                # 流完前断开，update_session_state 不会执行。这里每来新卡立刻写一次，
+                # 保证下一轮还能拿到 last_shown。
+                ranked_now = [
+                    {**p, "rank": i + 1}
+                    for i, p in enumerate(new_shown)
+                ]
+                await update_session_state(
+                    session_id,
+                    last_shown_products=ranked_now,
+                )
+                last_shown_persisted = True
 
             # 收集文本用于存对话历史
             if '"text":' in event_str and "text_delta" in event_str:
@@ -132,11 +165,21 @@ class MasterAgent:
             shown_products = old_shown
 
         # ── 9. 更新会话状态 ────────────────────────────────
-        await update_session_state(
-            session_id,
-            agent_state=next_state.value,
-            last_shown_products=shown_products,
-        )
+        # next_state == current_state 说明本轮无状态机转移，agent_state 让 sub-agent
+        # 自己负责（如 order_agent 提交订单后写 browsing），master 不再覆盖。
+        # 否则按 transitions 表把状态推进到 next_state。
+        state_to_write = next_state.value if next_state != current_state else None
+
+        if last_shown_persisted:
+            # 中途已经持久化过 last_shown，这里只更新可能的状态变化
+            if state_to_write is not None:
+                await update_session_state(session_id, agent_state=state_to_write)
+        else:
+            await update_session_state(
+                session_id,
+                agent_state=state_to_write,
+                last_shown_products=shown_products,
+            )
 
         # ── 10. 保存 AI 回复到历史 ─────────────────────────
         if assistant_text:
@@ -258,23 +301,44 @@ _POSITION_WORDS: dict[str, int] = {
 }
 
 
-def _resolve_position_reference(params: dict, last_shown: list[dict]) -> dict:
+def _resolve_position_reference(
+    params: dict,
+    last_shown: list[dict],
+    user_message: str = "",
+) -> dict:
     """
-    模型经常把 product_id 输出成 "1" 或 "第一个"。
-    这里做代码层兜底解析：把数字/位置词转成真实 product_id。
+    把"第一个/第二款/这个"等位置指代解析成真实 product_id。
+
+    Doubao-Seed-2.0-lite 经常把 product_id 输出成 "1"、"第一个"、甚至幻觉成 "P001"
+    这种不存在的 id。代码层做三层兜底：
+      1. 用户原话里直接含位置词 → 按位置取 last_shown 对应项
+      2. LLM 返回的是数字 / 位置词 → 同上
+      3. LLM 返回的 product_id 在 last_shown 里查不到 → 改用 last_shown[0]
     """
     pid = params.get("product_id")
-    if not pid or not isinstance(pid, str):
-        return params
+    valid_ids = {p.get("product_id") for p in last_shown}
 
+    # 1. 从用户原话直接抓位置词（最可信）
     pos: int | None = None
-    if pid.isdigit():
-        pos = int(pid)
-    elif pid in _POSITION_WORDS:
-        pos = _POSITION_WORDS[pid]
+    for word, p in _POSITION_WORDS.items():
+        if word in user_message:
+            pos = p
+            break
+
+    # 2. LLM 给的 product_id 是数字 / 位置词
+    if pos is None and pid and isinstance(pid, str):
+        if pid.isdigit():
+            pos = int(pid)
+        elif pid in _POSITION_WORDS:
+            pos = _POSITION_WORDS[pid]
 
     if pos is not None and 1 <= pos <= len(last_shown):
         params["product_id"] = last_shown[pos - 1].get("product_id", "")
+        return params
+
+    # 3. LLM 给了一个 product_id 但它根本不在 last_shown 里 → 当幻觉处理
+    if pid and isinstance(pid, str) and pid not in valid_ids and last_shown:
+        params["product_id"] = last_shown[0].get("product_id", "")
 
     return params
 
