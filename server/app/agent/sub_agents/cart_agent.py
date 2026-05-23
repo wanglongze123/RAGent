@@ -174,8 +174,13 @@ class CartAgent:
     ) -> AsyncIterator[str]:
         """删除购物车商品"""
         cart_item_id = params.get("cart_item_id")
+
+        # LLM 通常只能给到 product_id（用户说"删掉理肤泉"），代码层把它解析成 cart_item_id
         if not cart_item_id:
-            # 没有 cart_item_id 时展示购物车让用户选
+            cart_item_id = await _resolve_cart_item_id(session_id, params, message)
+
+        if not cart_item_id:
+            # 还是没解析到 → 展示购物车让用户选
             cart = await db.cart_get(session_id)
             if not cart["items"]:
                 yield ev.text_delta("您的购物车是空的。").to_sse()
@@ -221,6 +226,9 @@ class CartAgent:
         """修改购物车商品数量"""
         cart_item_id = params.get("cart_item_id")
         quantity = params.get("quantity")
+
+        if not cart_item_id:
+            cart_item_id = await _resolve_cart_item_id(session_id, params, message)
 
         if not cart_item_id or not quantity:
             yield ev.text_delta("请告诉我您想修改哪个商品的数量以及改成几个？").to_sse()
@@ -283,6 +291,58 @@ class CartAgent:
             message="购物车已清空",
         ).to_sse()
         yield ev.text_delta("购物车已清空。").to_sse()
+
+
+# ─────────────────────────────────────────────────────────
+# 工具函数
+# ─────────────────────────────────────────────────────────
+
+# 中文位置词 → 排名（cart 内的 1-based 位置）
+_CART_POSITION_WORDS: dict[str, int] = {
+    "第一": 1, "第一个": 1, "第一款": 1, "第1个": 1, "第1款": 1,
+    "第二": 2, "第二个": 2, "第二款": 2, "第2个": 2, "第2款": 2,
+    "第三": 3, "第三个": 3, "第三款": 3, "第3个": 3, "第3款": 3,
+    "第四": 4, "第四个": 4, "第四款": 4, "第4个": 4, "第4款": 4,
+    "第五": 5, "第五个": 5, "第五款": 5, "第5个": 5, "第5款": 5,
+}
+
+
+async def _resolve_cart_item_id(
+    session_id: str,
+    params: dict,
+    message: str,
+) -> str | None:
+    """
+    把 product_id / 位置词 / 商品名 解析成 cart_item_id。
+    适用于删除、改数量这种需要操作具体购物车条目的场景。
+
+    优先级：
+      1. params 里直接给了 product_id → 在 cart 里查同 product_id 的第一条
+      2. 用户原话里的位置词（"第一个"）→ 取 cart.items[N-1]
+      3. cart 只有一条 → 直接用唯一那一条
+    """
+    cart = await db.cart_get(session_id)
+    items = cart.get("items", [])
+    if not items:
+        return None
+
+    # 1. params.product_id → cart_item_id
+    pid = params.get("product_id")
+    if pid:
+        for item in items:
+            if item["product_id"] == pid:
+                return item["cart_item_id"]
+
+    # 2. 用户原话里的位置词
+    for word, pos in _CART_POSITION_WORDS.items():
+        if word in message and 1 <= pos <= len(items):
+            return items[pos - 1]["cart_item_id"]
+
+    # 3. cart 只有一条 → 唯一项
+    if len(items) == 1:
+        return items[0]["cart_item_id"]
+
+    return None
 
 
 cart_agent = CartAgent()

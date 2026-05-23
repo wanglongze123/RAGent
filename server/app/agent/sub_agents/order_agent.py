@@ -38,7 +38,18 @@ class OrderAgent:
 
         cart = await db.cart_get(session_id)
         if not cart["items"]:
+            # 购物车空就没有下单可言，退回 browsing 让用户继续逛
+            await db.update_session_state(session_id, agent_state="browsing")
+            await db.clear_order_state(session_id)
             yield ev.text_delta("您的购物车是空的，请先添加商品再来下单哦～").to_sse()
+            return
+
+        # 任何阶段说"算了/取消/不要了"都直接退出下单流程
+        # 否则在收姓名阶段说"算了"会被当成 receiver_name="算了"
+        if any(kw in message for kw in _CANCEL_KEYWORDS):
+            await db.clear_order_state(session_id)
+            await db.update_session_state(session_id, agent_state="cart_management")
+            yield ev.text_delta("已取消下单。您的购物车保持不变。").to_sse()
             return
 
         # 从 session 读已持久化的下单流程状态
