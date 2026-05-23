@@ -30,6 +30,7 @@ from app.models import events as ev
 _INTENT_TO_AGENT: dict[str, str] = {
     "search":       "search",
     "compare":      "compare",
+    "scene":        "scene",
     "cart_add":     "cart",
     "cart_manage":  "cart",
     "checkout":     "order",
@@ -260,12 +261,14 @@ class MasterAgent:
         # 延迟导入，避免循环依赖
         from app.agent.sub_agents.search_agent import search_agent
         from app.agent.sub_agents.compare_agent import compare_agent
+        from app.agent.sub_agents.scene_agent import scene_agent
         from app.agent.sub_agents.cart_agent import cart_agent
         from app.agent.sub_agents.order_agent import order_agent
 
         agents = {
             "search":  search_agent,
             "compare": compare_agent,
+            "scene":   scene_agent,
             "cart":    cart_agent,
             "order":   order_agent,
         }
@@ -386,6 +389,14 @@ _CHECKOUT_AMBIGUOUS = ["下单", "结账", "购买"]
 
 _COMPARE_KEYWORDS = ["对比", "比较", "哪个更", "哪个好", "哪款更"]
 
+# 场景化组合：明显的多类目编排诉求
+_SCENE_KEYWORDS = [
+    "度假", "旅游", "出差", "出游", "婚礼", "约会", "面试", "露营", "登山",
+    "整套", "搭配方案", "搭一身", "搭一套", "全套", "套装",
+    "送礼", "礼物清单", "送给",
+    "开学准备", "新生", "宝宝出行",
+]
+
 _SEARCH_KEYWORDS = [
     "推荐", "求推荐", "求介绍", "有什么", "找一款", "找一下",
     "想买", "看看有没有", "给我看",
@@ -443,6 +454,11 @@ def _quick_classify(message: str, current_state: str) -> Optional[dict]:
 
     if any(k in msg for k in _COMPARE_KEYWORDS):
         return _quick_dict("compare", {})
+
+    # 场景化组合优先级要在 search 之前判 — "推荐三亚度假整套" 同时含"推荐"和"度假"，
+    # 应判 scene 而不是单品 search
+    if any(k in msg for k in _SCENE_KEYWORDS):
+        return _quick_dict("scene", {"query": msg})
 
     if any(k in msg for k in _SEARCH_KEYWORDS):
         # query 直接传原话；下游 hybrid_retriever.parse_query 会抽价格，

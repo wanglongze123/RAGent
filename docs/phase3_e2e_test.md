@@ -160,6 +160,60 @@
 ### 4.3 空 session 直接加购
 - 新建 session 直接 `把第一个加入购物车` → "请告诉我您想加购哪款商品？"，state→cart_management ✓
 
+## 阶段 7 ✅ 场景化组合推荐（高级用户场景）
+
+### 需求
+项目 1.2 节高级场景之一：**"下周去三亚度假，搭配防晒+穿搭整套方案"** — 跨类目检索 + 场景理解 + 组合编排。
+
+### 设计
+新增 `scene_agent`（与 search/compare/cart/order 平级），路线 A：LLM 拆解 + 并行检索
+
+### 流程
+1. master 规则快速通道识别场景关键词（度假/旅游/出差/婚礼/露营/送礼/整套…）→ `intent=scene`
+2. `scene_agent.run()`:
+   - LLM 用 `SCENE_PLANNING_PROMPT` 把场景拆成 2-4 个购物主题（JSON Mode）
+     - 每个主题含 `theme` / `query` / `count`
+   - `asyncio.gather` 并行调 `hybrid_retriever.retrieve_products(每个主题)`
+   - 推 `product_card` 事件（按主题顺序，跨主题 product_id 去重）
+   - 用 `SCENE_REASONING_PROMPT` 流式生成场景化搭配文案
+3. 状态机：`STATE_ALLOWED_AGENTS` 在 BROWSING/COMPARING/CART_MANAGEMENT 都允许 scene
+
+### 实测三场景
+
+**1. 三亚度假**（"下周去三亚度假，搭配防晒和穿搭整套方案"）
+拆解 4 主题 → 6 件商品：
+- 全身防晒：理肤泉 ¥268 + 欧莱雅 ¥170
+- 度假穿搭：优衣库 T 恤 ×2（¥99 / ¥129）
+- 防晒配饰：北面帽子 ¥199
+- 沙滩鞋履：萨洛蒙徒步鞋 ¥1198
+
+**2. 露营装备**（"露营装备整套清单"）
+拆解 3 主题 → 3 件商品：
+- 露营搭建装备：Osprey 双肩背包 ¥699
+- 露营休憩装备：北面帽子 ¥199
+- 露营餐厨装备：三顿半咖啡 ¥58
+
+**3. 送给妈妈的礼物**（"给我妈准备生日礼物送给她"）
+拆解 3 主题 → 6 件商品：
+- 护肤礼盒：珀莱雅精华 + 兰蔻化妆水
+- 舒适配饰：Nike 帽子 + 李宁卫衣
+- 养生好物：东方树叶 + 海天调味品（数据集小，"养生好物"主题召回精度有限）
+
+### 改动文件
+- `app/agent/sub_agents/scene_agent.py` 新建
+- `app/llm/prompts/scene.py` 新建（PLANNING + REASONING 两个 prompt）
+- `app/agent/middleware.py` 注册 scene / scene_planning agent_name
+- `app/agent/state_machine.py` 三个状态都允许 scene
+- `app/agent/master_agent.py` `_INTENT_TO_AGENT` 加 scene；`_dispatch` 接 scene_agent；`_quick_classify` 加 `_SCENE_KEYWORDS`（场景词比 search 优先匹配）
+- `app/llm/prompts/master.py` 意图列表加 scene
+
+### 已知限制
+- 召回精度受数据集大小制约（100 件商品里"露营/养生"覆盖薄弱）
+- LLM 主题拆解多了一次调用，增加 ~3-5s 延迟（首个 Token 仍 < 50ms 因为有 tool_progress 立即推出）
+- 主题间召回去重后某些主题可能空（已忽略空主题不入 LLM 上下文）
+
+---
+
 ## 阶段 6 ✅ 首 Token 延迟优化（4.4 ⭐⭐ 加分项）
 
 ### 问题
