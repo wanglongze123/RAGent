@@ -11,7 +11,8 @@ Master Agent — 导购系统总控层。
   搜索、对比、购物车是"数据平面"。混在一起很快就会变成 God Class。
 """
 import json
-from typing import AsyncIterator
+import re
+from typing import AsyncIterator, Optional
 
 from app.agent.middleware import middleware
 from app.agent.state_machine import AgentState, get_next_state, is_agent_allowed
@@ -209,13 +210,25 @@ class MasterAgent:
         history: list[dict],
         session: dict,
     ) -> dict:
-        """调 LLM 分类意图，返回解析后的字典"""
-        # 取最近 6 条历史作为分类上下文（太多浪费 token）
+        """
+        意图分类：先走规则快速通道，没命中再 fallback 到 LLM。
+
+        为什么这么做：
+          Doubao-Seed-2.0-lite 单次 JSON 模式调用要 5-15s，把它放在每轮请求最前面
+          会导致首 Token 延迟严重超标（项目要求 <1s）。电商导购里大半的用户消息
+          都是高度模板化的（"加购第二个"/"我要下单"/"对比 A 和 B"/"推荐..."），
+          完全可以靠规则秒级判定，把 LLM 留给真正模糊的场景兜底。
+        """
+        current_state = session.get("agent_state", "browsing")
+        quick = _quick_classify(message, current_state)
+        if quick is not None:
+            return quick
+
+        # 走 LLM 慢路径
         context_messages = [
             {"role": m["role"], "content": m["content"]}
             for m in history[-6:]
         ]
-        # 当前消息已在 history 末尾，不重复添加
         if not context_messages or context_messages[-1]["content"] != message:
             context_messages.append({"role": "user", "content": message})
 
@@ -232,7 +245,6 @@ class MasterAgent:
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
-            # 解析失败时兜底：按 search 处理
             return {"intent": "search", "params": {"query": message}}
 
     async def _dispatch(
@@ -353,6 +365,108 @@ def _resolve_position_reference(
         params["product_id"] = last_shown[0].get("product_id", "")
 
     return params
+
+
+# ─────────────────────────────────────────────────────────
+# 规则快速通道（_quick_classify）—— 让常见意图秒级判定，避开 LLM 的 5-15s 延迟
+# ─────────────────────────────────────────────────────────
+
+_CART_ADD_KEYWORDS = ["加购", "加入购物车", "买这个", "买它", "下单这个"]
+_CART_REMOVE_KEYWORDS = ["删除", "移除", "去掉", "不要这个"]
+_CART_VIEW_KEYWORDS = ["查看购物车", "看看购物车", "我的购物车", "购物车里有"]
+_CART_CLEAR_KEYWORDS = ["清空购物车", "全部删除", "都不要了"]
+_CART_UPDATE_PATTERNS = [re.compile(p) for p in [
+    r"改成\s*\d+\s*(件|个|份)",
+    r"数量\s*改",
+    r"调整为\s*\d+",
+]]
+
+_CHECKOUT_KEYWORDS = ["我要下单", "去结账", "结算订单", "提交订单", "我要付款"]
+_CHECKOUT_AMBIGUOUS = ["下单", "结账", "购买"]
+
+_COMPARE_KEYWORDS = ["对比", "比较", "哪个更", "哪个好", "哪款更"]
+
+_SEARCH_KEYWORDS = [
+    "推荐", "求推荐", "求介绍", "有什么", "找一款", "找一下",
+    "想买", "看看有没有", "给我看",
+]
+
+_POSITION_RE = re.compile(r"第[一二三四五12345]+(个|款|项|件)?")
+_QUANTITY_RE = re.compile(r"改成\s*(\d+)\s*(件|个|份)?|(\d+)\s*(件|个|份)")
+
+
+def _quick_classify(message: str, current_state: str) -> Optional[dict]:
+    """
+    用纯规则判定意图。返回 LLM JSON 同构 dict，或 None（让 LLM 兜底）。
+
+    电商导购里大半的用户消息高度模板化（"加购第二个"/"我要下单"/"对比 A 和 B"/
+    "推荐..."），秒级规则就能搞定。LLM 留给真正模糊的场景。
+    """
+    msg = message.strip()
+    if not msg:
+        return None
+
+    if current_state == "checkout":
+        return _quick_dict("checkout", {"query": msg})
+
+    if any(k in msg for k in _CART_VIEW_KEYWORDS):
+        return _quick_dict("cart_manage", {"cart_action": "view"})
+
+    if any(k in msg for k in _CART_CLEAR_KEYWORDS):
+        return _quick_dict("cart_manage", {"cart_action": "clear"})
+
+    if any(p.search(msg) for p in _CART_UPDATE_PATTERNS) and current_state == "cart_management":
+        qty = None
+        m = _QUANTITY_RE.search(msg)
+        if m:
+            qty = int(m.group(1) or m.group(3))
+        return _quick_dict(
+            "cart_manage",
+            {"cart_action": "update_quantity", "quantity": qty},
+        )
+
+    if any(k in msg for k in _CART_REMOVE_KEYWORDS) and current_state == "cart_management":
+        return _quick_dict("cart_manage", {"cart_action": "remove"})
+
+    if any(k in msg for k in _CART_ADD_KEYWORDS):
+        params: dict = {"cart_action": "add"}
+        pos_match = _POSITION_RE.search(msg)
+        if pos_match:
+            params["product_id"] = pos_match.group()
+        return _quick_dict("cart_add", params)
+
+    if any(k in msg for k in _CHECKOUT_KEYWORDS):
+        return _quick_dict("checkout", {})
+
+    if any(k == msg or k in msg for k in _CHECKOUT_AMBIGUOUS) and len(msg) <= 6:
+        return _quick_dict("checkout", {})
+
+    if any(k in msg for k in _COMPARE_KEYWORDS):
+        return _quick_dict("compare", {})
+
+    if any(k in msg for k in _SEARCH_KEYWORDS):
+        # query 直接传原话；下游 hybrid_retriever.parse_query 会抽价格，
+        # _enrich_filters_from_message 会抽品牌/属性排除。LLM 的活规则替了
+        return _quick_dict("search", {"query": msg})
+
+    # cart_management 下任何没规则命中的消息默认接续上轮 cart_add：
+    # 多半是用户回答 SKU 规格（"120g 标准装"），让 cart_agent 内部根据
+    # pending_sku_product_id 处理。原本 master 把这类走 LLM 兜底要 13s。
+    if current_state == "cart_management":
+        return _quick_dict("cart_add", {"cart_action": "add"})
+
+    return None
+
+
+def _quick_dict(intent: str, params: dict) -> dict:
+    """统一规则快速通道返回结构（与 LLM JSON 输出对齐）"""
+    return {
+        "intent": intent,
+        "params": params,
+        "clarification_needed": False,
+        "clarification_question": "",
+        "_quick": True,  # 调试标记
+    }
 
 
 # 属性否定关键词（化妆品/食品成分这类硬过滤词，扩商品类目时按需补）
