@@ -14,7 +14,7 @@ from app.db.vector_store import get_vector_store
 from app.rag.bm25_retriever import bm25_retriever
 from app.rag.reranker import reranker
 from app.db.relational import init_db
-from app.api import chat
+from app.api import chat, cart
 
 
 @asynccontextmanager
@@ -72,6 +72,7 @@ if images_root.exists():
 
 # 路由注册
 app.include_router(chat.router, prefix="/api/v1", tags=["chat"])
+app.include_router(cart.router, prefix="/api/v1", tags=["cart"])
 
 
 @app.get("/")
