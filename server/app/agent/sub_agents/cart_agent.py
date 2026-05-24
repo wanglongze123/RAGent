@@ -157,11 +157,17 @@ class CartAgent:
             message=f"已将「{product.title}」加入购物车",
         ).to_sse()
 
-        # 生成确认文字
-        user_messages = [{"role": "user", "content": message}]
+        # 生成确认文字（把操作结果告诉 LLM，避免它因为看不到上下文而反问）
+        sku_props_str = "/".join(str(v) for v in sku.properties.values())
+        action_summary = (
+            f"已成功将「{product.title}」（{sku_props_str}，¥{sku.price}）"
+            f"× {quantity} 件加入购物车。"
+            f"购物车现共 {cart['total_count']} 件，合计 ¥{cart['total_price']}。"
+            f"请用简短自然的语气确认加购成功。"
+        )
         async for token in middleware.chat_stream(
             agent_name="cart",
-            user_messages=user_messages,
+            user_messages=[{"role": "user", "content": action_summary}],
             temperature=0.3,
         ):
             yield ev.text_delta(token).to_sse()
@@ -209,10 +215,10 @@ class CartAgent:
             message="已从购物车移除",
         ).to_sse()
 
-        user_messages = [{"role": "user", "content": message}]
+        action_summary = f"已从购物车移除商品。购物车现共 {cart['total_count']} 件，合计 ¥{cart['total_price']}。请简短确认删除成功。"
         async for token in middleware.chat_stream(
             agent_name="cart",
-            user_messages=user_messages,
+            user_messages=[{"role": "user", "content": action_summary}],
             temperature=0.3,
         ):
             yield ev.text_delta(token).to_sse()
@@ -251,10 +257,14 @@ class CartAgent:
             message=f"已将数量修改为 {quantity} 个",
         ).to_sse()
 
-        user_messages = [{"role": "user", "content": message}]
+        action_summary = (
+            f"已将「{updated['title']}」数量修改为 {quantity} 件。"
+            f"购物车现共 {cart['total_count']} 件，合计 ¥{cart['total_price']}。"
+            f"请简短确认修改成功。"
+        )
         async for token in middleware.chat_stream(
             agent_name="cart",
-            user_messages=user_messages,
+            user_messages=[{"role": "user", "content": action_summary}],
             temperature=0.3,
         ):
             yield ev.text_delta(token).to_sse()
