@@ -31,13 +31,15 @@ STATE_ALLOWED_AGENTS: dict[AgentState, list[str]] = {
 # 未列出的组合 = 状态不变
 TRANSITIONS: dict[tuple[AgentState, str], AgentState] = {
     # 从浏览态出发
-    (AgentState.BROWSING,        "compare"):      AgentState.COMPARING,
+    (AgentState.BROWSING,        "compare"):       AgentState.COMPARING,
     (AgentState.BROWSING,        "cart_add"):      AgentState.CART_MANAGEMENT,
+    (AgentState.BROWSING,        "cart_manage"):   AgentState.CART_MANAGEMENT,
     (AgentState.BROWSING,        "checkout"):      AgentState.CHECKOUT,
 
     # 从对比态出发
     (AgentState.COMPARING,       "search"):        AgentState.BROWSING,
     (AgentState.COMPARING,       "cart_add"):      AgentState.CART_MANAGEMENT,
+    (AgentState.COMPARING,       "cart_manage"):   AgentState.CART_MANAGEMENT,
     (AgentState.COMPARING,       "checkout"):      AgentState.CHECKOUT,
 
     # 从购物车态出发
