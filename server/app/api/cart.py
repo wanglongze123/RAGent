@@ -1,5 +1,6 @@
 """
-购物车 REST API
+购物车 + 商品 REST API
+GET    /api/v1/products/{id}     — 商品详情
 GET    /api/v1/cart              — 查看购物车
 POST   /api/v1/cart              — 加购商品
 PUT    /api/v1/cart/{item_id}    — 修改数量
@@ -14,6 +15,28 @@ from app.db.product_repo import product_repo
 
 router = APIRouter()
 
+
+# ───── 商品详情 ─────
+
+@router.get("/products/{product_id}")
+async def get_product(product_id: str):
+    product = product_repo.get(product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="商品不存在")
+    data = product.model_dump()
+    data["image_url"] = product.image_url
+    data.pop("image_path", None)
+    if product.rag_knowledge:
+        data["marketing_description"] = product.rag_knowledge.marketing_description
+        data["faq"] = [{"question": f.question, "answer": f.answer}
+                       for f in product.rag_knowledge.official_faq]
+    else:
+        data["marketing_description"] = None
+        data["faq"] = []
+    return data
+
+
+# ───── 购物车 ─────
 
 class CartAddRequest(BaseModel):
     session_id: str
