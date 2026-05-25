@@ -77,11 +77,12 @@ class SearchAgent:
         # ── 模式5：正常检索（图搜 / 具体文字搜索）────────────
         price_max   = params.get("price_max")
         price_min   = params.get("price_min")
+        incl_brands = params.get("include_brands", [])
         excl_brands = params.get("exclude_brands", [])
         excl_attrs  = params.get("exclude_attrs", [])
         async for e in self._do_search(
             session_id, query, price_max, price_min,
-            excl_brands, excl_attrs, session, image_base64, order_info,
+            incl_brands, excl_brands, excl_attrs, session, image_base64, order_info,
         ):
             yield e
 
@@ -178,7 +179,7 @@ class SearchAgent:
             async for e in self._do_search(
                 session_id, combined_query,
                 collected.get("price_max"), collected.get("price_min"),
-                [], [], session, None, order_info,
+                [], [], [], session, None, order_info,
             ):
                 yield e
 
@@ -192,6 +193,7 @@ class SearchAgent:
         query: str,
         price_max,
         price_min,
+        incl_brands: list,
         excl_brands: list,
         excl_attrs: list,
         session: dict,
@@ -201,7 +203,8 @@ class SearchAgent:
         try:
             async for e in self._do_search_inner(
                 session_id, query, price_max, price_min,
-                excl_brands, excl_attrs, session, image_base64, order_info,
+                incl_brands, excl_brands, excl_attrs,
+                session, image_base64, order_info,
             ):
                 yield e
         except Exception as ex:
@@ -214,6 +217,7 @@ class SearchAgent:
         query: str,
         price_max,
         price_min,
+        incl_brands: list,
         excl_brands: list,
         excl_attrs: list,
         session: dict,
@@ -248,6 +252,8 @@ class SearchAgent:
             yield ev.text_delta("抱歉，暂时没有找到合适的商品，您可以调整一下条件试试。").to_sse()
             return
 
+        if incl_brands:
+            ranked = _filter_include_brands(ranked, incl_brands)
         if excl_brands:
             ranked = _filter_brands(ranked, excl_brands)
         if excl_attrs and not image_base64:
@@ -422,6 +428,21 @@ def _build_price_filter(price_max, price_min) -> dict | None:
     if not conditions:
         return None
     return conditions[0] if len(conditions) == 1 else {"$and": conditions}
+
+
+def _filter_include_brands(ranked: list[dict], incl_brands: list[str]) -> list[dict]:
+    """只保留指定品牌的商品（正向品牌过滤，与 _filter_brands 排除方向相反）。"""
+    included: set[str] = set()
+    for b in incl_brands:
+        regional = product_repo.brands_in_region(b)
+        if regional:
+            included.update(regional)
+        else:
+            included.add(b)
+    return [
+        rp for rp in ranked
+        if any(inc in rp["metadata"].get("brand", "") for inc in included)
+    ]
 
 
 def _filter_brands(ranked: list[dict], excl_brands: list[str]) -> list[dict]:

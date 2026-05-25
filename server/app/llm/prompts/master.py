@@ -30,6 +30,7 @@ INTENT_CLASSIFICATION_PROMPT = """你是一个电商导购 AI 的意图分析模
     "query": "用户的核心购物需求，语义部分",
     "price_max": null,
     "price_min": null,
+    "include_brands": [],
     "exclude_brands": [],
     "exclude_attrs": [],
     "compare_products": [],
@@ -48,6 +49,7 @@ INTENT_CLASSIFICATION_PROMPT = """你是一个电商导购 AI 的意图分析模
 
 - query：提取语义核心，去掉价格/品牌等结构化约束，如"200元以内的洗面奶"→"洗面奶"
 - price_max/price_min：从用户消息中提取价格约束，单位元
+- include_brands：用户明确只要的品牌列表，如["蒙牛"]，留空表示不限品牌
 - exclude_brands：用户明确不要的品牌列表，如["日系","欧莱雅"]
 - exclude_attrs：用户明确不要的属性，如["含酒精","香精"]
 - compare_products：对比意图时，要对比的商品名称或 ID 列表
@@ -63,11 +65,19 @@ INTENT_CLASSIFICATION_PROMPT = """你是一个电商导购 AI 的意图分析模
 
 ## 多轮细化搜索（重要）
 
-当用户发出片段式细化需求（"500以内"/"要轻量的"/"不要耐克"等），
-必须结合对话历史和最近展示商品的 sub_category，将片段合并成完整搜索词：
+当用户发出片段式细化需求（"500以内"/"要轻量的"/"不要耐克"/"要蒙牛品牌"等），
+必须结合对话历史和最近展示商品的 sub_category，将片段合并成完整搜索词。
+
+**约束必须从对话历史中积累，不能丢失：**
+- 上一轮提到了"100元以内"，这一轮还没说取消价格 → 继续保留 price_max=100
+- 上一轮提到了"不要耐克"，这一轮没说取消 → 继续保留 exclude_brands=["耐克"]
+- 用户说"只要蒙牛牌子" → include_brands=["蒙牛"]（正向品牌过滤）
+
+示例：
 - "500以内" + 上文是跑鞋 → query="跑鞋", price_max=500
-- "要轻量的" + 上文是跑鞋 → query="轻量跑鞋"
+- "要轻量的" + 上文是跑鞋，price_max=500 还在 → query="轻量跑鞋", price_max=500
 - "不要耐克" + 上文是跑鞋 → query="跑鞋", exclude_brands=["耐克","Nike"]
+- "要蒙牛品牌" + 上文是纯牛奶，price_max=100 还在 → query="纯牛奶", include_brands=["蒙牛"], price_max=100
 - "有没有红色的" + 上文是连衣裙 → query="红色连衣裙"
 
 ## 注意事项
