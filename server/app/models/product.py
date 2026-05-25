@@ -1,6 +1,13 @@
 """商品数据模型 — 对应数据集 JSON 结构 + 接口响应"""
+import re
 from typing import Optional
 from pydantic import BaseModel, Field
+
+_UNITS = r"ml|mL|ML|L|g|G|kg|KG|mg|GB|MB|TB|cm|mm|克|升|毫升|%"
+# 末尾规格：直接拼在词尾，无空格（美妆常见，如 "精华30ml"）
+_TRAILING_SPEC_RE = re.compile(rf'\d+(?:\.\d+)?\s*(?:{_UNITS})\s*$')
+# 中间规格：前面有空格（食品/饮料常见，如 " 445ml×15 瓶装..."）
+_INLINE_SPEC_RE   = re.compile(rf'\s+\d+(?:\.\d+)?\s*(?:{_UNITS})')
 
 
 class SKU(BaseModel):
@@ -44,6 +51,19 @@ class Product(BaseModel):
     def image_url(self) -> str:
         """对外暴露的图片URL路径（客户端拼接 base_url）"""
         return f"/static/images/{self.image_path}"
+
+    @property
+    def display_title(self) -> str:
+        """
+        去掉规格信息的展示标题，用于商品卡片。
+          步骤1：去掉末尾数字+单位（美妆：'...精华30ml' → '...精华'）
+          步骤2：在第一个'空格+数字+单位'处截断（食品：'...饮料 445ml×...' → '...饮料'）
+        """
+        t = _TRAILING_SPEC_RE.sub("", self.title).strip()
+        m = _INLINE_SPEC_RE.search(t)
+        if m:
+            t = t[:m.start()].strip()
+        return t if len(t) >= 4 else self.title
 
 
 class ProductCard(BaseModel):

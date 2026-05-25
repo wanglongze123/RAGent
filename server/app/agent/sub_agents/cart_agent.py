@@ -134,7 +134,7 @@ class CartAgent:
                 from app.db.relational import update_order_state
                 await update_order_state(session_id, order_info)
                 yield ev.clarification(
-                    question=f"请问您需要哪个规格的{product.brand} {product.sub_category}？",
+                    question="请问您需要哪个规格？",
                     options=options,
                 ).to_sse()
                 return

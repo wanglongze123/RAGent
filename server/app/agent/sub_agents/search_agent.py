@@ -119,7 +119,7 @@ class SearchAgent:
 
             yield ev.product_card(
                 product_id=product.product_id,
-                title=product.title,
+                title=product.display_title,
                 brand=product.brand,
                 image_url=product.image_url,
                 price=product.base_price,
