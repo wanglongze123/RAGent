@@ -186,7 +186,7 @@ class CartAgent:
         # 引导用户做下一步决定
         yield ev.clarification(
             question="接下来？",
-            options=["帮我下单", "查看购物车"],
+            options=["帮我下单", "查看购物车", "推荐其他商品"],
         ).to_sse()
 
     async def _handle_remove(
@@ -303,6 +303,10 @@ class CartAgent:
             )
         lines.append(f"\n合计：¥{cart['total_price']}")
         yield ev.text_delta("\n".join(lines)).to_sse()
+        yield ev.clarification(
+            question="接下来？",
+            options=["帮我下单", "清空购物车"],
+        ).to_sse()
 
     async def _handle_interpret(
         self,

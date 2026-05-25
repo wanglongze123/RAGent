@@ -108,7 +108,7 @@ class ProductInquiryAgent:
         # 引导用户做下一步决定
         yield ev.clarification(
             question="需要帮您加入购物车吗？",
-            options=["帮我加入购物车", "再看看别的"],
+            options=["帮我加入购物车", "推荐其他款"],
         ).to_sse()
 
 
