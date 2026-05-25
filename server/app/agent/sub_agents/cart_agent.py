@@ -342,7 +342,22 @@ class CartAgent:
         # 校验序号，映射到实际购物车条目
         target = items[item_index - 1] if 1 <= item_index <= len(items) else None
 
-        if action == "update_quantity" and target and quantity is not None:
+        if action == "add" and target and quantity is not None:
+            # 在现有数量上增加（"再来两件"）
+            new_qty = target["quantity"] + int(quantity)
+            updated = await db.cart_update_quantity(session_id, target["cart_item_id"], new_qty)
+            if updated:
+                updated_cart = await db.cart_get(session_id)
+                yield ev.cart_update(
+                    action="update_quantity",
+                    product_id=updated["product_id"], sku_id=updated["sku_id"],
+                    title=updated["title"], quantity=new_qty,
+                    cart_total_count=updated_cart["total_count"],
+                    cart_total_price=updated_cart["total_price"],
+                    message=f"已将数量改为 {new_qty} 件",
+                ).to_sse()
+
+        elif action == "update_quantity" and target and quantity is not None:
             qty = int(quantity)
             if qty <= 0:
                 success = await db.cart_remove(session_id, target["cart_item_id"])
