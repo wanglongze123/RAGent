@@ -117,7 +117,13 @@ class MasterAgent:
             yield ev.done(session_id, current_state.value).to_sse()
             return
 
-        # ── 6. 状态机：计算下一个状态 ──────────────────────
+        # ── 6. 文字搜索：模糊 query 触发问卷（图搜直接出结果）──
+        if intent == "search" and not image_base64 and not params.get("questionnaire_reply"):
+            if not _is_query_specific_enough(params):
+                params = dict(params)
+                params["_needs_questionnaire"] = True
+
+        # ── 7. 状态机：计算下一个状态 ──────────────────────
         next_state = get_next_state(current_state, intent)
         agent_name = _INTENT_TO_AGENT.get(intent, "search")
 
@@ -223,11 +229,16 @@ class MasterAgent:
         """
         current_state = session.get("agent_state", "browsing")
 
+        order_state = session.get("order_state") or {}
+
+        # 问卷收集阶段：所有消息直接转给 search_agent 作为问卷回复
+        if order_state.get("search_questionnaire"):
+            return _quick_dict("search", {"questionnaire_reply": message})
+
         # product_inquiry 优先于 _quick_classify，防止"有什么/怎么样"被 search 关键词截走
         if _is_product_inquiry(message, session):
             return _quick_dict("product_inquiry", {"query": message})
 
-        order_state = session.get("order_state") or {}
         has_pending_sku = bool(order_state.get("pending_sku_product_id"))
         quick = _quick_classify(message, current_state, has_pending_sku)
         if quick is not None:
@@ -404,6 +415,23 @@ _INQUIRY_EXCLUSIONS = [
     "推荐", "找一款", "有没有", "求推荐",                  # → search
     "想买", "想要", "我要", "就要", "要买", "我想买",      # → cart_add（购买意图，不是追问）
 ]
+
+
+def _is_query_specific_enough(params: dict) -> bool:
+    """
+    判断搜索 query 是否已有足够结构化约束，可以直接检索。
+    若只有 2-4 字的品类词（"跑鞋"/"面霜"），则需要先走问卷收集需求。
+    有价格 / 品牌排除 / 较长修饰词 中任意一个 → 直接搜索。
+    """
+    if params.get("price_max") or params.get("price_min"):
+        return True
+    if params.get("exclude_brands"):
+        return True
+    query = params.get("query", "")
+    # 去掉常见泛义词后，剩余超过 4 字说明有功能修饰
+    filler = {"推荐", "帮我", "找", "买", "看看", "介绍", "好的", "想要", "想买"}
+    meaningful = "".join(c for c in query if c not in "".join(filler))
+    return len(meaningful) > 4
 
 
 def _is_product_inquiry(message: str, session: dict) -> bool:

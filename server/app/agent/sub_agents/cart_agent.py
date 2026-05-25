@@ -168,25 +168,11 @@ class CartAgent:
             message=f"已将「{product.title}」加入购物车",
         ).to_sse()
 
-        # 生成确认文字（把操作结果告诉 LLM，避免它因为看不到上下文而反问）
-        sku_props_str = "/".join(str(v) for v in sku.properties.values())
-        action_summary = (
-            f"已成功将「{product.title}」（{sku_props_str}，¥{sku.price}）"
-            f"× {quantity} 件加入购物车。"
-            f"购物车现共 {cart['total_count']} 件，合计 ¥{cart['total_price']}。"
-            f"请用简短自然的语气确认加购成功。"
-        )
-        async for token in middleware.chat_stream(
-            agent_name="cart",
-            user_messages=[{"role": "user", "content": action_summary}],
-            temperature=0.3,
-        ):
-            yield ev.text_delta(token).to_sse()
-
-        # 引导用户做下一步决定
+        # cart_update 事件已携带 toast 提示，无需再调 LLM 生成确认文字
+        # 直接给出下一步选择框，节省 3-8s 等待
         yield ev.clarification(
             question="接下来？",
-            options=["帮我下单", "查看购物车", "推荐其他商品"],
+            options=["帮我下单", "查看购物车", f"推荐其他{product.sub_category}"],
         ).to_sse()
 
     async def _handle_remove(

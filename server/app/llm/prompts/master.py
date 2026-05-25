@@ -61,6 +61,15 @@ INTENT_CLASSIFICATION_PROMPT = """你是一个电商导购 AI 的意图分析模
 
 {last_shown_products}
 
+## 多轮细化搜索（重要）
+
+当用户发出片段式细化需求（"500以内"/"要轻量的"/"不要耐克"等），
+必须结合对话历史和最近展示商品的 sub_category，将片段合并成完整搜索词：
+- "500以内" + 上文是跑鞋 → query="跑鞋", price_max=500
+- "要轻量的" + 上文是跑鞋 → query="轻量跑鞋"
+- "不要耐克" + 上文是跑鞋 → query="跑鞋", exclude_brands=["耐克","Nike"]
+- "有没有红色的" + 上文是连衣裙 → query="红色连衣裙"
+
 ## 注意事项
 
 1. 价格约束不进 query，进 price_max/price_min

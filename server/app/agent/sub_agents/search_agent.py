@@ -11,15 +11,21 @@ Search Agent — 商品搜索与推荐。
   Step 6: 一句话引导 + 商品选择框（用户点击后进入 product_inquiry 查看详情）
 """
 import json as _json
+import re as _re
 from typing import AsyncIterator
 
 from app.agent.middleware import middleware
+from app.db import relational as db
 from app.db.product_repo import product_repo
 from app.models import events as ev
 from app.rag.hybrid_retriever import hybrid_retriever
 
 
 class SearchAgent:
+
+    # ─────────────────────────────────────────────────────────
+    # 主入口：分发到各子流程
+    # ─────────────────────────────────────────────────────────
 
     async def run(
         self,
@@ -30,35 +36,177 @@ class SearchAgent:
         image_base64: str | None = None,
     ) -> AsyncIterator[str]:
 
-        # ── Step 1: 解析结构化参数 ──────────────────────────
-        query       = params.get("query") or message
+        order_info = dict(session.get("order_state") or {})
+
+        # ── 模式1：问卷进行中（master 已路由） ──────────────
+        if params.get("questionnaire_reply") is not None:
+            async for e in self._handle_questionnaire_reply(
+                session_id, params["questionnaire_reply"], order_info, session
+            ):
+                yield e
+            return
+
+        query = params.get("query") or message
+
+        # ── 模式2：用户要细化当前结果 ───────────────────────
+        if "细化需求" in query:
+            last_q = order_info.get("last_search_query", "")
+            hint   = _get_category_hint(last_q) if last_q else "如：价格范围、品牌、功能需求"
+            yield ev.text_delta(
+                f"好的！请告诉我想在哪方面调整，例如：\n· {hint}\n"
+                "我会结合之前的搜索条件重新推荐。"
+            ).to_sse()
+            return
+
+        # ── 模式3：重新搜索 / 都不是 ────────────────────────
+        if "重新搜索" in query or "都不是" in query:
+            order_info.pop("last_search_query", None)
+            order_info.pop("search_questionnaire", None)
+            await db.update_order_state(session_id, order_info)
+            yield ev.text_delta(
+                "好的！请告诉我您的新需求，也可以发一张图片帮我理解。"
+            ).to_sse()
+            return
+
+        # ── 模式4：模糊文字查询，先走问卷 ─────────────────────
+        if params.get("_needs_questionnaire"):
+            async for e in self._start_questionnaire(session_id, query, order_info):
+                yield e
+            return
+
+        # ── 模式5：正常检索（图搜 / 具体文字搜索）────────────
         price_max   = params.get("price_max")
         price_min   = params.get("price_min")
         excl_brands = params.get("exclude_brands", [])
         excl_attrs  = params.get("exclude_attrs", [])
+        async for e in self._do_search(
+            session_id, query, price_max, price_min,
+            excl_brands, excl_attrs, session, image_base64, order_info,
+        ):
+            yield e
 
-        # 用户否定了当前搜索结果，引导重新描述需求（不做检索）
-        if "都不是" in query:
-            yield ev.text_delta(
-                "好的！请告诉我您更具体的需求，例如：\n"
-                "· 品牌偏好（想要/不想要哪些品牌）\n"
-                "· 价格范围\n"
-                "· 特定功能或用途\n\n"
-                "也可以重新发一张图片帮我理解"
+    # ─────────────────────────────────────────────────────────
+    # 问卷：启动
+    # ─────────────────────────────────────────────────────────
+
+    async def _start_questionnaire(
+        self, session_id: str, original_query: str, order_info: dict
+    ) -> AsyncIterator[str]:
+        order_info["search_questionnaire"] = {
+            "original_query": original_query,
+            "step": 1,
+            "collected": {},
+            "hint": _get_category_hint(original_query),
+        }
+        await db.update_order_state(session_id, order_info)
+        yield ev.clarification(
+            question=f"好的，帮您搜索「{original_query}」！先了解一下：您的预算大概是多少？",
+            options=["300元以内", "300-600元", "600-1000元", "1000元以上", "不限预算"],
+        ).to_sse()
+
+    # ─────────────────────────────────────────────────────────
+    # 问卷：处理每一步回复
+    # ─────────────────────────────────────────────────────────
+
+    async def _handle_questionnaire_reply(
+        self,
+        session_id: str,
+        message: str,
+        order_info: dict,
+        session: dict,
+    ) -> AsyncIterator[str]:
+
+        questionnaire = order_info.get("search_questionnaire", {})
+        step          = questionnaire.get("step", 1)
+        collected     = questionnaire.get("collected", {})
+        original      = questionnaire.get("original_query", message)
+        hint          = questionnaire.get("hint", "如：特定功能、款式偏好")
+
+        # 取消问卷
+        if any(kw in message for kw in ("算了", "取消", "不买了", "退出")):
+            order_info.pop("search_questionnaire", None)
+            await db.update_order_state(session_id, order_info)
+            yield ev.text_delta("好的，已退出搜索。有需要随时告诉我！").to_sse()
+            return
+
+        # ── Step 1：价格 ────────────────────────────────────
+        if step == 1:
+            pmin, pmax = _parse_price_option(message)
+            if pmin is not None: collected["price_min"] = pmin
+            if pmax is not None: collected["price_max"] = pmax
+            questionnaire.update({"step": 2, "collected": collected})
+            order_info["search_questionnaire"] = questionnaire
+            await db.update_order_state(session_id, order_info)
+            yield ev.clarification(
+                question="品牌有偏好吗？",
+                options=["国产品牌", "国际大牌", "不限品牌"],
             ).to_sse()
             return
 
-        where   = _build_price_filter(price_max, price_min)
-        fetch_k = 10   # 统一多取候选，交给 LLM 裁判精选
+        # ── Step 2：品牌 ────────────────────────────────────
+        if step == 2:
+            if "国产" in message:
+                collected["brand_pref"] = "国产"
+            elif "国际大牌" in message or "大牌" in message:
+                collected["brand_pref"] = "international"
+            # "不限品牌" → 不记录，保持空
+            questionnaire.update({"step": 3, "collected": collected})
+            order_info["search_questionnaire"] = questionnaire
+            await db.update_order_state(session_id, order_info)
+            yield ev.clarification(
+                question=f"还有什么特别要求吗？（{hint}）",
+                options=["没有，直接搜索"],
+            ).to_sse()
+            return
 
-        # ── Step 2: 检索候选 ────────────────────────────────
+        # ── Step 3：品类专属 / 直接搜 ───────────────────────
+        if step == 3:
+            extra = None if message == "没有，直接搜索" else message
+            if extra:
+                collected["extra"] = extra
+
+            order_info.pop("search_questionnaire", None)
+            await db.update_order_state(session_id, order_info)
+
+            # 合并 query
+            combined_query = original
+            if extra:
+                combined_query = f"{extra}{original}"   # 修饰词前置，如"轻量跑鞋"
+            if collected.get("brand_pref") == "国产":
+                combined_query = f"国产{combined_query}"
+
+            async for e in self._do_search(
+                session_id, combined_query,
+                collected.get("price_max"), collected.get("price_min"),
+                [], [], session, None, order_info,
+            ):
+                yield e
+
+    # ─────────────────────────────────────────────────────────
+    # 核心检索逻辑（原 run() Steps 2-6）
+    # ─────────────────────────────────────────────────────────
+
+    async def _do_search(
+        self,
+        session_id: str,
+        query: str,
+        price_max,
+        price_min,
+        excl_brands: list,
+        excl_attrs: list,
+        session: dict,
+        image_base64: str | None,
+        order_info: dict,
+    ) -> AsyncIterator[str]:
+
+        where   = _build_price_filter(price_max, price_min)
+        fetch_k = 10
+
         if image_base64:
             yield ev.image_searching("正在分析图片…").to_sse()
             try:
                 ranked = await hybrid_retriever.retrieve_by_image(
-                    image_base64=image_base64,
-                    top_k=fetch_k,
-                    where=where,
+                    image_base64=image_base64, top_k=fetch_k, where=where,
                 )
             except Exception as e:
                 yield ev.text_delta(f"图片识别失败：{e}").to_sse()
@@ -71,48 +219,30 @@ class SearchAgent:
         else:
             yield ev.tool_progress("hybrid_search", "正在为您检索相关商品...").to_sse()
             ranked = await hybrid_retriever.retrieve_products(
-                query=query,
-                top_k_chunks=fetch_k * 3,
-                top_k_products=fetch_k,
-                where=where,
+                query=query, top_k_chunks=fetch_k * 3, top_k_products=fetch_k, where=where,
             )
 
         if not ranked:
             yield ev.text_delta("抱歉，暂时没有找到合适的商品，您可以调整一下条件试试。").to_sse()
             return
 
-        # ── Step 3: 硬过滤（品牌 / 属性排除）──────────────
         if excl_brands:
             ranked = _filter_brands(ranked, excl_brands)
-        if excl_attrs and not image_base64:   # 图搜没有 chunk 文本，跳过属性过滤
+        if excl_attrs and not image_base64:
             ranked = _filter_attrs(ranked, excl_attrs)
 
         if not ranked:
             yield ev.text_delta("根据您的筛选条件，暂时没有找到合适的商品。").to_sse()
             return
 
-        # ── Step 4: LLM 裁判 ────────────────────────────────
-        # 图搜候选已按视觉相似度降序排列，裁判必须知道这个排名含义才能正确取舍。
-        # 四种情况：
-        #   纯文字         → text_constraint=query，裁判按文字相关性判
-        #   纯图片         → text_constraint=None，裁判按视觉排名取前排
-        #   图片+指代词     → "这款/这个"指向图片本身，不提供新筛选信息
-        #                    → text_constraint=None，等同纯图片
-        #   图片+明确文字   → "只要农夫山泉"等具体约束 → text_constraint=query
         if image_base64:
-            if not query or any(w in query for w in _IMAGE_REF_WORDS):
-                text_constraint = None        # 无实质文字约束
-            else:
-                text_constraint = query       # 有品牌/商品名等具体约束
+            text_constraint = None if (not query or any(w in query for w in _IMAGE_REF_WORDS)) else query
         else:
             text_constraint = query
 
         yield ev.tool_progress("llm_judge", "正在筛选最匹配的商品…").to_sse()
-        selected_ids = await _llm_judge(
-            text_constraint, ranked, is_image_search=bool(image_base64)
-        )
+        selected_ids = await _llm_judge(text_constraint, ranked, is_image_search=bool(image_base64))
 
-        # 按裁判顺序重排；若裁判返回空则降级取前3
         if selected_ids:
             id_order = {pid: i for i, pid in enumerate(selected_ids)}
             ranked = sorted(
@@ -122,48 +252,71 @@ class SearchAgent:
         else:
             ranked = ranked[:3]
 
-        # ── Step 5: 收集商品 ─────────────────────────────────
-        shown_products = []
-        for rp in ranked:
-            product = product_repo.get(rp["product_id"])
-            if product:
-                shown_products.append(product)
-
+        shown_products = [p for rp in ranked if (p := product_repo.get(rp["product_id"]))]
         if not shown_products:
             yield ev.text_delta("抱歉，商品信息暂时无法获取。").to_sse()
             return
 
-        # ── Step 6: 一句话引导 + product_card_list 批量事件 ──
-        # 客户端用 HorizontalPager 横滑展示，点击卡片直接打开底部详情面板。
-        # 不再为每款商品单独配文字描述（用户用得上时点开看，避免一墙字）。
-        intro = (
-            "根据您上传的图片，为您找到以下相似款："
-            if image_base64 else
-            "根据您的需求，为您推荐以下商品："
-        )
+        # 保存本次搜索 query，供后续细化时合并上下文
+        order_info["last_search_query"] = query
+        await db.update_order_state(session_id, order_info)
+
+        intro = "根据您上传的图片，为您找到以下相似款：" if image_base64 else "根据您的需求，为您推荐以下商品："
         yield ev.text_delta(intro).to_sse()
 
-        products_payload = [
-            {
-                "product_id": p.product_id,
-                "title": p.display_title,
-                "brand": p.brand,
-                "image_url": p.image_url,
-                "price": p.base_price,
-                "sub_category": p.sub_category,
-            }
-            for p in shown_products
-        ]
         yield ev.product_card_list(
-            products=products_payload,
+            products=[
+                {"product_id": p.product_id, "title": p.display_title,
+                 "brand": p.brand, "image_url": p.image_url,
+                 "price": p.base_price, "sub_category": p.sub_category}
+                for p in shown_products
+            ],
             search_type="image" if image_base64 else "text",
         ).to_sse()
 
-        # 卡片下方仅留两个全局动作；查看详情/加购通过点击卡片在客户端本地完成
         yield ev.clarification(
             question="您可以横向滑动查看所有商品，或：",
-            options=["对比这几款", "都不是，换个方式找"],
+            options=["对比这几款", "细化需求", "重新搜索"],
         ).to_sse()
+
+
+# ─────────────────────────────────────────────────────────
+# 问卷辅助函数
+# ─────────────────────────────────────────────────────────
+
+_CATEGORY_HINTS: list[tuple[str, str]] = [
+    (r"跑鞋|运动鞋|球鞋|跑步",     "如：轻量、防水、缓震"),
+    (r"面霜|精华|护肤|乳液|化妆品", "如：敏感肌适用、补水、美白、无酒精"),
+    (r"饮料|矿泉水|茶|咖啡|汽水",   "如：无糖、低卡、口味偏好"),
+    (r"裤子|上衣|外套|衬衫|T恤|服装", "如：宽松、修身、防风、速干"),
+    (r"洗面奶|洁面",               "如：温和清洁、控油、适合油皮/干皮"),
+]
+
+
+def _get_category_hint(query: str) -> str:
+    for pattern, hint in _CATEGORY_HINTS:
+        if _re.search(pattern, query):
+            return hint
+    return "如：特定功能、款式偏好、颜色材质"
+
+
+def _parse_price_option(message: str):
+    """把 '300-600元' / '300以内' / '1000以上' 解析成 (price_min, price_max)。"""
+    if "不限" in message:
+        return None, None
+    # "300-600元" or "300~600"
+    m = _re.search(r"(\d+(?:\.\d+)?)\s*[-~～到]\s*(\d+(?:\.\d+)?)", message)
+    if m:
+        return float(m.group(1)), float(m.group(2))
+    # "300以内" / "500以下"
+    m = _re.search(r"(\d+(?:\.\d+)?)\s*(?:元以内|以内|以下|元以下)", message)
+    if m:
+        return None, float(m.group(1))
+    # "1000以上" / "1000元以上"
+    m = _re.search(r"(\d+(?:\.\d+)?)\s*(?:元以上|以上)", message)
+    if m:
+        return float(m.group(1)), None
+    return None, None
 
 
 # 图片指代词：用户文字只是指向图片，不携带额外筛选信息

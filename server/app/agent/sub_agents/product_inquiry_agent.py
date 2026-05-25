@@ -106,9 +106,10 @@ class ProductInquiryAgent:
             yield ev.text_delta(token).to_sse()
 
         # 引导用户做下一步决定
+        # "推荐其他[sub_category]" 带上类目，检索器才能找到同类商品
         yield ev.clarification(
             question="需要帮您加入购物车吗？",
-            options=["帮我加入购物车", "推荐其他款"],
+            options=["帮我加入购物车", f"推荐其他{product.sub_category}"],
         ).to_sse()
 
 
