@@ -529,9 +529,12 @@ private fun ProductCarousel(
     Column(modifier = Modifier.fillMaxWidth()) {
         HorizontalPager(
             state = pagerState,
-            contentPadding = PaddingValues(horizontal = 8.dp),
+            // 负外边距抵消 LazyColumn 的 12dp horizontal padding，让卡片铺满屏幕宽度
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = (-12).dp),
+            contentPadding = PaddingValues(horizontal = 16.dp),
             pageSpacing = 12.dp,
-            modifier = Modifier.fillMaxWidth(),
         ) { page ->
             ProductCardLarge(products[page]) { onProductClick(products[page].productId) }
         }
@@ -598,15 +601,22 @@ private fun ProductCardLarge(product: Product, onClick: () -> Unit) {
         shape = RoundedCornerShape(20.dp),
     ) {
         Column {
-            AsyncImage(
-                model = NetworkConfig.imageUrl(product.imageUrl),
-                contentDescription = product.title,
+            // 图片区：用 Fit 显示完整商品图，不裁剪；背景色补白边
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(200.dp),
-                contentScale = ContentScale.Crop,
-            )
-            Column(modifier = Modifier.padding(16.dp)) {
+                    .height(220.dp)
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center,
+            ) {
+                AsyncImage(
+                    model = NetworkConfig.imageUrl(product.imageUrl),
+                    contentDescription = product.title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit,
+                )
+            }
+            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                 Text(
                     product.brand,
                     style = MaterialTheme.typography.labelSmall,
@@ -756,7 +766,7 @@ private fun ProductDetailSheet(
                         .height(300.dp),
                     contentScale = ContentScale.Crop,
                 )
-                // 顶部一个细拖动条（视觉提示可下滑关闭）
+                // 顶部拖动条
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
@@ -766,6 +776,28 @@ private fun ProductDetailSheet(
                         .clip(RoundedCornerShape(2.dp))
                         .background(Color.White.copy(alpha = 0.6f))
                 )
+                // 右上角关闭按钮
+                IconButton(
+                    onClick = {
+                        scope.launch {
+                            sheetState.hide()
+                            onDismiss()
+                        }
+                    },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp)
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.35f)),
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "关闭",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
             }
 
             // ── 内容区，宽边距 ──
