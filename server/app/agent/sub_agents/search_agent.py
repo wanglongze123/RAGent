@@ -198,6 +198,28 @@ class SearchAgent:
         image_base64: str | None,
         order_info: dict,
     ) -> AsyncIterator[str]:
+        try:
+            async for e in self._do_search_inner(
+                session_id, query, price_max, price_min,
+                excl_brands, excl_attrs, session, image_base64, order_info,
+            ):
+                yield e
+        except Exception as ex:
+            print(f"[search_agent] _do_search 未捕获异常: {ex}")
+            yield ev.text_delta("抱歉，搜索时遇到了问题，请稍后重试。").to_sse()
+
+    async def _do_search_inner(
+        self,
+        session_id: str,
+        query: str,
+        price_max,
+        price_min,
+        excl_brands: list,
+        excl_attrs: list,
+        session: dict,
+        image_base64: str | None,
+        order_info: dict,
+    ) -> AsyncIterator[str]:
 
         where   = _build_price_filter(price_max, price_min)
         fetch_k = 10
@@ -257,9 +279,14 @@ class SearchAgent:
             yield ev.text_delta("抱歉，商品信息暂时无法获取。").to_sse()
             return
 
-        # 保存本次搜索 query，供后续细化时合并上下文
-        order_info["last_search_query"] = query
-        await db.update_order_state(session_id, order_info)
+        # 保存本次搜索上下文，供后续细化时 LLM 合并
+        # 图片搜索 query 为空时，用第一款展示商品的类目作为上下文（避免细化时无从合并）
+        context_to_save = query if query else (
+            shown_products[0].sub_category if shown_products else ""
+        )
+        if context_to_save:
+            order_info["last_search_query"] = context_to_save
+            await db.update_order_state(session_id, order_info)
 
         intro = "根据您上传的图片，为您找到以下相似款：" if image_base64 else "根据您的需求，为您推荐以下商品："
         yield ev.text_delta(intro).to_sse()
