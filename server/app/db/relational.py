@@ -361,6 +361,29 @@ async def order_create(
     }
 
 
+async def get_used_addresses(session_id: str) -> list[dict]:
+    """从本会话历史订单中提取去重地址（最多3条），供下单时快速选择。"""
+    async with aiosqlite.connect(settings.sqlite_db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT receiver_name, receiver_phone, receiver_address FROM orders "
+            "WHERE session_id = ? ORDER BY created_at DESC",
+            (session_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    seen, result = set(), []
+    for r in rows:
+        key = (r["receiver_name"], r["receiver_phone"], r["receiver_address"])
+        if key not in seen:
+            seen.add(key)
+            result.append({"receiver_name": r["receiver_name"],
+                           "receiver_phone": r["receiver_phone"],
+                           "receiver_address": r["receiver_address"]})
+        if len(result) >= 3:
+            break
+    return result
+
+
 async def order_get(order_id: str) -> Optional[dict]:
     async with aiosqlite.connect(settings.sqlite_db_path) as db:
         db.row_factory = aiosqlite.Row

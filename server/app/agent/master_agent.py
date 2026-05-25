@@ -399,9 +399,10 @@ _PRODUCT_REF_WORDS = [
 
 # 含这些词的消息应走其他意图，不走 product_inquiry
 _INQUIRY_EXCLUSIONS = [
-    "对比", "比较", "哪个更", "哪个好", "哪款更",   # → compare
-    "加购", "加入购物车", "买这个", "买它", "下单",  # → cart
-    "推荐", "找一款", "有没有", "求推荐",            # → search
+    "对比", "比较", "哪个更", "哪个好", "哪款更",         # → compare
+    "加购", "加入购物车", "买这个", "买它", "下单",        # → cart
+    "推荐", "找一款", "有没有", "求推荐",                  # → search
+    "想买", "想要", "我要", "就要", "要买", "我想买",      # → cart_add（购买意图，不是追问）
 ]
 
 
@@ -448,6 +449,13 @@ _SEARCH_KEYWORDS = [
 
 _POSITION_RE = re.compile(r"第[一二三四五12345]+(个|款|项|件)?")
 
+# 购买意图词 + 商品指代词组合 → cart_add 快速路由
+_PURCHASE_INTENT_WORDS = ["想买", "想要", "要买", "我要", "就要", "我想买"]
+_PURCHASE_PRODUCT_REFS = {
+    "这款", "那款", "这个", "那个", "这件", "那件", "这条", "那条",
+    "第一款", "第二款", "第三款", "第一个", "第二个", "第三个", "它",
+}
+
 
 def _quick_classify(message: str, current_state: str, has_pending_sku: bool = False) -> Optional[dict]:  # noqa: E501
     """
@@ -479,6 +487,15 @@ def _quick_classify(message: str, current_state: str, has_pending_sku: bool = Fa
 
     # 删除 / 改数量：口语表达多样（"减掉一件"/"只要一个"/"去掉第二个"），
     # 规则无法全覆盖，统一交给 LLM 解析具体参数
+
+    # 购买意图 + 商品指代词 → cart_add（"我想买第一款"/"我要这个"/"就要这款"）
+    if (any(k in msg for k in _PURCHASE_INTENT_WORDS) and
+            any(w in msg for w in _PURCHASE_PRODUCT_REFS)):
+        params: dict = {"cart_action": "add"}
+        pos_match = _POSITION_RE.search(msg)
+        if pos_match:
+            params["product_id"] = pos_match.group()
+        return _quick_dict("cart_add", params)
 
     if any(k in msg for k in _CHECKOUT_KEYWORDS):
         return _quick_dict("checkout", {})

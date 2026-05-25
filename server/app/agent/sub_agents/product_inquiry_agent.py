@@ -12,6 +12,7 @@ Product Inquiry Agent — 针对已展示商品的追问。
 from typing import AsyncIterator
 
 from app.agent.middleware import middleware
+from app.db import relational as db
 from app.db.product_repo import product_repo
 from app.models import events as ev
 
@@ -45,6 +46,11 @@ class ProductInquiryAgent:
         if not product:
             yield ev.text_delta("抱歉，暂时无法获取该商品的详细信息。").to_sse()
             return
+
+        # 记录本轮追问的商品，供后续"帮我加入购物车"时直接定位（避免错位到 last_shown[0]）
+        order_info = dict(session.get("order_state") or {})
+        order_info["last_inquired_product_id"] = product_id
+        await db.update_order_state(session_id, order_info)
 
         # ── Step 2: 组装上下文 ──────────────────────────────
         context_parts = [
@@ -98,6 +104,12 @@ class ProductInquiryAgent:
             temperature=0.7,
         ):
             yield ev.text_delta(token).to_sse()
+
+        # 引导用户做下一步决定
+        yield ev.clarification(
+            question="需要帮您加入购物车吗？",
+            options=["帮我加入购物车", "再看看别的"],
+        ).to_sse()
 
 
 product_inquiry_agent = ProductInquiryAgent()

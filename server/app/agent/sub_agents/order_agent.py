@@ -57,13 +57,17 @@ class OrderAgent:
 
         # ── 阶段判断（按字段是否填充判断当前步骤）─────────
         if not order_info.get("confirmed_cart"):
-            # 第一次进入，或刚从上一轮过来，等待用户确认购物车
             async for e in self._handle_cart_confirm(message, cart, session_id, order_info):
                 yield e
 
         elif not order_info.get("receiver_name"):
-            async for e in self._handle_collect_name(message, session_id, order_info):
-                yield e
+            # 若展示过历史地址选择框，先处理地址选择；否则收集姓名
+            if order_info.get("_address_options") is not None:
+                async for e in self._handle_address_select(message, session_id, order_info):
+                    yield e
+            else:
+                async for e in self._handle_collect_name(message, session_id, order_info):
+                    yield e
 
         elif not order_info.get("receiver_phone"):
             async for e in self._handle_collect_phone(message, session_id, order_info):
@@ -89,11 +93,22 @@ class OrderAgent:
         如果 order_info 是空的（首次进入），展示购物车。
         如果用户回复确认词，进入下一步收姓名。
         """
-        # 用户已说过"我要下单"且这次回复"确认"等，进入下一步
+        # 用户已看过购物车，此次点击"确认下单" → 进入地址选择环节
         if order_info.get("_cart_shown") and any(kw in message for kw in _CONFIRM_KEYWORDS):
             order_info["confirmed_cart"] = True
             await db.update_order_state(session_id, order_info)
-            yield ev.text_delta("好的！请问收货人姓名是？").to_sse()
+
+            saved = await db.get_used_addresses(session_id)
+            if saved:
+                options = [
+                    f"{a['receiver_name']}  {a['receiver_phone'][:3]}****{a['receiver_phone'][7:]}  {a['receiver_address']}"
+                    for a in saved
+                ] + ["使用新地址"]
+                order_info["_address_options"] = saved
+                await db.update_order_state(session_id, order_info)
+                yield ev.clarification(question="请选择收货地址：", options=options).to_sse()
+            else:
+                yield ev.text_delta("好的！请问收货人姓名是？").to_sse()
             return
 
         if any(kw in message for kw in _CANCEL_KEYWORDS):
@@ -101,7 +116,7 @@ class OrderAgent:
             yield ev.text_delta("已取消下单。").to_sse()
             return
 
-        # 首次进入，展示购物车
+        # 首次进入：展示购物车 + 确认/取消选择框
         lines = ["为您汇总购物车内容：\n"]
         for item in cart["items"]:
             props = "、".join(str(v) for v in item["sku_props"].values())
@@ -111,12 +126,58 @@ class OrderAgent:
                 + f" × {item['quantity']}  ¥{item['subtotal']}"
             )
         lines.append(f"\n合计：¥{cart['total_price']}")
-        lines.append("\n以上商品确认下单吗？")
-        yield ev.text_delta("\n".join(lines)).to_sse()
-
-        # 标记"已展示购物车"，下一轮用户回复"确认"才推进
+        yield ev.clarification(
+            question="\n".join(lines),
+            options=["确认下单", "取消下单"],
+        ).to_sse()
         order_info["_cart_shown"] = True
         await db.update_order_state(session_id, order_info)
+
+    async def _handle_address_select(
+        self, message: str, session_id: str, order_info: dict
+    ) -> AsyncIterator[str]:
+        """处理历史地址选择框的用户回复。"""
+        saved: list[dict] = order_info.get("_address_options", [])
+
+        if any(kw in message for kw in _CANCEL_KEYWORDS) or message.strip() == "使用新地址":
+            order_info.pop("_address_options", None)
+            await db.update_order_state(session_id, order_info)
+            yield ev.text_delta("好的！请问收货人姓名是？").to_sse()
+            return
+
+        # 尝试匹配用户点击的地址选项
+        selected = None
+        for addr in saved:
+            masked = f"{addr['receiver_phone'][:3]}****{addr['receiver_phone'][7:]}"
+            option_text = f"{addr['receiver_name']}  {masked}  {addr['receiver_address']}"
+            if message.strip() == option_text:
+                selected = addr
+                break
+
+        if not selected:
+            # 未匹配到（理论上不应发生），当作新地址处理
+            order_info.pop("_address_options", None)
+            await db.update_order_state(session_id, order_info)
+            yield ev.text_delta("好的！请问收货人姓名是？").to_sse()
+            return
+
+        # 使用历史地址 → 直接跳到最终确认
+        order_info["receiver_name"]    = selected["receiver_name"]
+        order_info["receiver_phone"]   = selected["receiver_phone"]
+        order_info["receiver_address"] = selected["receiver_address"]
+        order_info.pop("_address_options", None)
+        await db.update_order_state(session_id, order_info)
+
+        masked = f"{selected['receiver_phone'][:3]}****{selected['receiver_phone'][7:]}"
+        yield ev.clarification(
+            question=(
+                f"收货信息确认：\n"
+                f"  姓名：{selected['receiver_name']}\n"
+                f"  电话：{masked}\n"
+                f"  地址：{selected['receiver_address']}"
+            ),
+            options=["确认提交订单", "取消下单"],
+        ).to_sse()
 
     async def _handle_collect_name(
         self, message: str, session_id: str, order_info: dict
@@ -153,12 +214,14 @@ class OrderAgent:
 
         phone = order_info["receiver_phone"]
         masked_phone = f"{phone[:3]}****{phone[7:]}"
-        yield ev.text_delta(
-            f"收货信息确认：\n"
-            f"  姓名：{order_info['receiver_name']}\n"
-            f"  电话：{masked_phone}\n"
-            f"  地址：{address}\n\n"
-            f"信息无误，确认提交订单吗？"
+        yield ev.clarification(
+            question=(
+                f"收货信息确认：\n"
+                f"  姓名：{order_info['receiver_name']}\n"
+                f"  电话：{masked_phone}\n"
+                f"  地址：{address}"
+            ),
+            options=["确认提交订单", "取消下单"],
         ).to_sse()
 
     async def _handle_final_confirm(

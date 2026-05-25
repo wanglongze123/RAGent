@@ -85,12 +85,20 @@ class CartAgent:
             from app.db.relational import update_order_state
             await update_order_state(session_id, order_info)
         else:
-            # 从 params 或 last_shown_products 解析目标商品
+            # 从 params → last_inquired_product_id → last_shown[0] 依次降级
             product_id = params.get("product_id")
             if not product_id:
-                last_shown = session.get("last_shown_products", [])
-                if last_shown:
-                    product_id = last_shown[0]["product_id"]
+                order_info = dict(session.get("order_state") or {})
+                last_inquired = order_info.get("last_inquired_product_id")
+                if last_inquired and product_repo.get(last_inquired):
+                    product_id = last_inquired
+                    # 用完即清，避免后续加购时错误复用
+                    order_info.pop("last_inquired_product_id", None)
+                    await db.update_order_state(session_id, order_info)
+                else:
+                    last_shown = session.get("last_shown_products", [])
+                    if last_shown:
+                        product_id = last_shown[0]["product_id"]
 
         if not product_id:
             yield ev.text_delta("请告诉我您想加购哪款商品？").to_sse()
@@ -174,6 +182,12 @@ class CartAgent:
             temperature=0.3,
         ):
             yield ev.text_delta(token).to_sse()
+
+        # 引导用户做下一步决定
+        yield ev.clarification(
+            question="接下来？",
+            options=["帮我下单", "查看购物车"],
+        ).to_sse()
 
     async def _handle_remove(
         self,
