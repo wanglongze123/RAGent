@@ -47,9 +47,8 @@ class OrderAgent:
         # 任何阶段说"算了/取消/不要了"都直接退出下单流程
         # 否则在收姓名阶段说"算了"会被当成 receiver_name="算了"
         if any(kw in message for kw in _CANCEL_KEYWORDS):
-            await db.clear_order_state(session_id)
-            await db.update_session_state(session_id, agent_state="cart_management")
-            yield ev.text_delta("已取消下单。您的购物车保持不变。").to_sse()
+            async for e in self._cancel_order(session_id, session):
+                yield e
             return
 
         # 从 session 读已持久化的下单流程状态
@@ -112,8 +111,8 @@ class OrderAgent:
             return
 
         if any(kw in message for kw in _CANCEL_KEYWORDS):
-            await db.clear_order_state(session_id)
-            yield ev.text_delta("已取消下单。").to_sse()
+            async for e in self._cancel_order(session_id, session):
+                yield e
             return
 
         # 首次进入：展示购物车 + 确认/取消选择框
@@ -228,8 +227,8 @@ class OrderAgent:
         self, message: str, cart: dict, session_id: str, order_info: dict
     ) -> AsyncIterator[str]:
         if any(kw in message for kw in _CANCEL_KEYWORDS):
-            await db.clear_order_state(session_id)
-            yield ev.text_delta("已取消下单。您的购物车保持不变。").to_sse()
+            async for e in self._cancel_order(session_id, session):
+                yield e
             return
 
         if not any(kw in message for kw in _CONFIRM_KEYWORDS):
@@ -263,11 +262,40 @@ class OrderAgent:
         await db.update_session_state(session_id, agent_state="browsing")
 
         yield ev.text_delta(
-            f"🎉 订单提交成功！\n"
+            f"订单提交成功！\n"
             f"订单号：{order['order_id']}\n"
             f"总金额：¥{order['total_price']}\n"
             f"预计 3-5 个工作日内送达，感谢您的购买！"
         ).to_sse()
+
+    async def _cancel_order(
+        self, session_id: str, session: dict
+    ) -> AsyncIterator[str]:
+        """
+        取消下单：清空下单状态，回到 browsing，
+        并根据 last_shown_products 还原上一步的选择框。
+        用户可以继续加购，或点「重新搜索」从头开始。
+        """
+        await db.clear_order_state(session_id)
+        await db.update_session_state(session_id, agent_state="browsing")
+
+        yield ev.text_delta("已取消下单，购物车保持不变。").to_sse()
+
+        # 根据上次展示的商品恢复选项框（「加购第X款」+ 「重新搜索」）
+        last_shown = session.get("last_shown_products", [])
+        if last_shown:
+            _CN = ["第一款", "第二款", "第三款", "第四款", "第五款"]
+            options = [f"加购{_CN[i]}" for i in range(min(len(last_shown), 5))]
+            options.append("重新搜索")
+            yield ev.clarification(
+                question="您可以继续购物：",
+                options=options,
+            ).to_sse()
+        else:
+            yield ev.clarification(
+                question="您可以继续购物：",
+                options=["重新搜索"],
+            ).to_sse()
 
 
 order_agent = OrderAgent()
