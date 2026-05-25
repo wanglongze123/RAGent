@@ -76,17 +76,147 @@ class SearchAgent:
                 yield e
             return
 
-        # ── 模式5：正常检索（图搜 / 具体文字搜索）────────────
         price_max   = params.get("price_max")
         price_min   = params.get("price_min")
         incl_brands = params.get("include_brands", [])
         excl_brands = params.get("exclude_brands", [])
         excl_attrs  = params.get("exclude_attrs", [])
+
+        # ── 模式5：在已有候选集内细化（有上下文 + 非图搜）────
+        # 原则：初次召回是"撒网"，后续细化是"在网里捞"
+        # 避免因细化条件重新发散检索导致上下文丢失
+        last_shown = session.get("last_shown_products", [])
+        if last_shown and not image_base64:
+            async for e in self._refine_in_candidates(
+                session_id, last_shown, query, price_max, price_min,
+                incl_brands, excl_brands, session, order_info,
+            ):
+                yield e
+            return
+
+        # ── 模式6：全量向量检索（首次搜索 / 图搜）────────────
         async for e in self._do_search(
             session_id, query, price_max, price_min,
             incl_brands, excl_brands, excl_attrs, session, image_base64, order_info,
         ):
             yield e
+
+    # ─────────────────────────────────────────────────────────
+    # 在已有候选集内细化
+    # ─────────────────────────────────────────────────────────
+
+    async def _refine_in_candidates(
+        self,
+        session_id: str,
+        last_shown: list[dict],
+        query: str,
+        price_max,
+        price_min,
+        incl_brands: list,
+        excl_brands: list,
+        session: dict,
+        order_info: dict,
+    ) -> AsyncIterator[str]:
+        """
+        在已展示商品中过滤细化，不重新向量检索。
+        硬过滤（价格/品牌）→ 语义重排（非结构化属性如尺寸/功能）→ 空则报告没有。
+        """
+        # 图片搜索的品牌上下文：自动注入保存的品牌
+        if not incl_brands:
+            saved_brands = order_info.get("last_search_brands", [])
+            if saved_brands:
+                incl_brands = saved_brands
+
+        shown_ids = [p["product_id"] for p in last_shown]
+
+        # ── Step 1：硬过滤（价格 + 品牌）─────────────────────
+        hard_filtered: list = []
+        for pid in shown_ids:
+            product = product_repo.get(pid)
+            if not product:
+                continue
+            min_price = min((s.price for s in product.skus), default=product.base_price)
+            if price_max is not None and min_price > price_max:
+                continue
+            if price_min is not None and min_price < price_min:
+                continue
+            if incl_brands and not any(b in product.brand for b in incl_brands):
+                continue
+            if excl_brands and any(b in product.brand for b in excl_brands):
+                continue
+            hard_filtered.append(product)
+
+        if not hard_filtered:
+            yield ev.text_delta(
+                "当前搜索结果中没有符合条件的商品。"
+            ).to_sse()
+            yield ev.clarification(
+                question="您可以：",
+                options=["重新搜索"],
+            ).to_sse()
+            return
+
+        # ── Step 2：语义重排（尺寸/功能等非结构化约束）────────
+        # 在硬过滤结果的商品 ID 范围内做语义检索，让更相关的排前面
+        final_products = hard_filtered
+        effective_query = query or order_info.get("last_search_query", "")
+
+        if effective_query and len(hard_filtered) > 1:
+            try:
+                candidate_ids = [p.product_id for p in hard_filtered]
+                where_in = {"product_id": {"$in": candidate_ids}}
+                if price_max is not None or price_min is not None:
+                    price_cond = _build_price_filter(price_max, price_min)
+                    where_in = {"$and": [where_in, price_cond]} if price_cond else where_in
+
+                ranked = await hybrid_retriever.retrieve_products(
+                    query=effective_query,
+                    top_k_chunks=len(candidate_ids) * 6,
+                    top_k_products=len(candidate_ids),
+                    where=where_in,
+                )
+                if ranked:
+                    seen: set = set()
+                    reranked = []
+                    for r in ranked:
+                        if r["product_id"] not in seen:
+                            seen.add(r["product_id"])
+                            p = product_repo.get(r["product_id"])
+                            if p:
+                                reranked.append(p)
+                    if reranked:
+                        final_products = reranked
+            except Exception as ex:
+                print(f"[search_agent] 候选集内语义重排失败，使用硬过滤结果: {ex}")
+
+        # ── Step 3：更新上下文并推送结果 ─────────────────────
+        if effective_query:
+            order_info["last_search_query"] = effective_query
+            await db.update_order_state(session_id, order_info)
+
+        filtered_count = len(final_products)
+        original_count = len(shown_ids)
+        intro = (
+            f"为您筛选出 {filtered_count} 款符合条件的商品："
+            if filtered_count < original_count
+            else "根据您的需求，为您推荐以下商品："
+        )
+        yield ev.text_delta(intro).to_sse()
+
+        yield ev.product_card_list(
+            products=[
+                {"product_id": p.product_id, "title": p.display_title,
+                 "brand": p.brand, "image_url": p.image_url,
+                 "price": p.base_price, "sub_category": p.sub_category}
+                for p in final_products
+            ],
+            search_type="text",
+        ).to_sse()
+
+        yield ev.clarification(
+            question="您可以横向滑动查看，或：",
+            options=["对比这几款", "细化需求", "重新搜索"],
+        ).to_sse()
 
     # ─────────────────────────────────────────────────────────
     # 问卷：启动
