@@ -156,38 +156,12 @@ class SearchAgent:
             ).to_sse()
             return
 
-        # ── Step 2：语义重排（尺寸/功能等非结构化约束）────────
-        # 在硬过滤结果的商品 ID 范围内做语义检索，让更相关的排前面
+        # ── Step 2：候选集内排序（只做 Python 层硬过滤，不再调 ChromaDB）────
+        # 语义排序已由初次召回完成；候选集内的 ChromaDB $in 过滤不可靠，
+        # 会静默失效导致全局搜索污染结果（已验证 bug）。
+        # 非结构化属性（尺寸/功能）保留硬过滤结果，用户如需更精确可点「重新搜索」。
         final_products = hard_filtered
         effective_query = query or order_info.get("last_search_query", "")
-
-        if effective_query and len(hard_filtered) > 1:
-            try:
-                candidate_ids = [p.product_id for p in hard_filtered]
-                where_in = {"product_id": {"$in": candidate_ids}}
-                if price_max is not None or price_min is not None:
-                    price_cond = _build_price_filter(price_max, price_min)
-                    where_in = {"$and": [where_in, price_cond]} if price_cond else where_in
-
-                ranked = await hybrid_retriever.retrieve_products(
-                    query=effective_query,
-                    top_k_chunks=len(candidate_ids) * 6,
-                    top_k_products=len(candidate_ids),
-                    where=where_in,
-                )
-                if ranked:
-                    seen: set = set()
-                    reranked = []
-                    for r in ranked:
-                        if r["product_id"] not in seen:
-                            seen.add(r["product_id"])
-                            p = product_repo.get(r["product_id"])
-                            if p:
-                                reranked.append(p)
-                    if reranked:
-                        final_products = reranked
-            except Exception as ex:
-                print(f"[search_agent] 候选集内语义重排失败，使用硬过滤结果: {ex}")
 
         # ── Step 3：更新上下文并推送结果 ─────────────────────
         if effective_query:
