@@ -47,13 +47,19 @@ class SearchAgent:
 
         top_k = 5
 
+        # 相关性阈值：低于阈值的结果直接丢，不凑数发给用户
+        # BGE reranker 输出原始 logit（无上界，~0 是相关/不相关的分界线）
+        # 图搜用余弦相似度（0~1，越高越像）
+        RERANKER_MIN_SCORE = -0.5   # 低于此值说明 BGE 认为基本不相关
+        IMAGE_MIN_SCORE    =  0.45  # 低于此值说明图像向量距离太远
+
         # ── Step 2-3: 检索（图搜 / 文本检索分两条路）────────
         if image_base64:
             yield ev.image_searching("正在分析图片…").to_sse()
             try:
                 ranked = await hybrid_retriever.retrieve_by_image(
                     image_base64=image_base64,
-                    top_k=top_k * 2 if excl_brands else top_k,
+                    top_k=top_k * 2,   # 多取一倍，过滤后再截断
                     where=where,
                 )
             except Exception as e:
@@ -67,9 +73,12 @@ class SearchAgent:
             # 图搜场景下走 brand 硬过滤；attr 过滤需要 chunk 文本，跳过
             if excl_brands:
                 ranked = _filter_brands(ranked, excl_brands)
+            # 余弦相似度过滤：保留相似度足够高的，至少保留 1 个兜底
+            filtered = [r for r in ranked if r["score"] >= IMAGE_MIN_SCORE]
+            ranked = filtered if filtered else ranked[:1]
         else:
             yield ev.tool_progress("hybrid_search", "正在为您检索相关商品...").to_sse()
-            fetch_k = top_k * 2 if (excl_brands or excl_attrs) else top_k
+            fetch_k = top_k * 2   # 多取，reranker 过滤后再截断
             ranked = await hybrid_retriever.retrieve_products(
                 query=query,
                 top_k_chunks=fetch_k * 3,
@@ -80,6 +89,9 @@ class SearchAgent:
                 ranked = _filter_brands(ranked, excl_brands)
             if excl_attrs:
                 ranked = _filter_attrs(ranked, excl_attrs)
+            # BGE reranker 分数过滤：负分说明模型认为不相关，至少保留 1 个兜底
+            filtered = [r for r in ranked if r["score"] >= RERANKER_MIN_SCORE]
+            ranked = filtered if filtered else ranked[:1]
 
         ranked = ranked[:top_k]
         if not ranked:
