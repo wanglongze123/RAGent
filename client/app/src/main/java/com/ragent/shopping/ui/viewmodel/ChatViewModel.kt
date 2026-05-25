@@ -24,6 +24,9 @@ data class ChatUiState(
     val agentState: AgentState = AgentState.BROWSING,
     val sessionId: String = "",
     val toastMessage: String = "",
+    // 商品详情面板：null 表示不展示，非 null 时展示底部弹层
+    val detailProduct: com.ragent.shopping.data.model.Product? = null,
+    val isLoadingDetail: Boolean = false,
 )
 
 class ChatViewModel(
@@ -72,6 +75,30 @@ class ChatViewModel(
 
     // 旧接口兼容（供外部直接传 base64，不带 bitmap 预览）
     fun searchByImageBase64(base64: String) = sendMessage("", base64, null)
+
+    // ===== 商品详情底部面板 =====
+
+    fun openProductDetail(productId: String) {
+        if (_uiState.value.isLoadingDetail) return
+        _uiState.update { it.copy(isLoadingDetail = true) }
+        viewModelScope.launch {
+            try {
+                val product = chatRepo.getProduct(productId)
+                _uiState.update { it.copy(detailProduct = product, isLoadingDetail = false) }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isLoadingDetail = false,
+                        toastMessage = "加载商品详情失败：${e.message ?: ""}",
+                    )
+                }
+            }
+        }
+    }
+
+    fun closeProductDetail() {
+        _uiState.update { it.copy(detailProduct = null) }
+    }
 
     // ===== 新建会话 =====
 

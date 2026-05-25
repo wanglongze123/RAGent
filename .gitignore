@@ -52,3 +52,7 @@ client/**/.idea/
 
 # ===== 数据集图片不上传（体积大，可本地挂载）=====
 ecommerce_agent_dataset/
+
+# ===== 大模型文件 / 文档 =====
+server/models/
+docs/

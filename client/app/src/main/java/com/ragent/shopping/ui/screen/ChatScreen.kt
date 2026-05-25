@@ -57,10 +57,15 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -226,7 +231,7 @@ fun ChatScreen(
                 items(uiState.messages) { message ->
                     MessageItem(
                         message = message,
-                        onProductClick = onNavigateToProduct,
+                        onProductClick = viewModel::openProductDetail,
                         onOptionSelected = viewModel::selectClarification,
                     )
                 }
@@ -260,6 +265,15 @@ fun ChatScreen(
                 onGalleryClick = { imagePickerLauncher.launch("image/*") },
             )
         }
+    }
+
+    // 商品详情底部弹层
+    uiState.detailProduct?.let { product ->
+        ProductDetailSheet(
+            product = product,
+            onDismiss = viewModel::closeProductDetail,
+            onAddToCart = { _, _ -> /* Module C 接入 */ },
+        )
     }
 }
 
@@ -689,6 +703,147 @@ private fun ClarificationMessage(question: String, options: List<String>, onSele
                         textAlign = TextAlign.Center,
                     )
                 }
+            }
+        }
+    }
+}
+
+// ===== 商品详情底部面板 =====
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ProductDetailSheet(
+    product: Product,
+    onDismiss: () -> Unit,
+    onAddToCart: (productId: String, skuId: String) -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
+
+    // 维护用户在每个属性上的选择，例如 {颜色=黑色, 尺码=M}
+    val propertyKeys = remember(product) {
+        product.skus.flatMap { it.properties.keys }.distinct()
+    }
+    var selectedProps by remember(product) {
+        mutableStateOf(product.skus.firstOrNull()?.properties ?: emptyMap())
+    }
+
+    // 根据当前选择匹配 SKU；找不到完全匹配时降级为第一个 SKU
+    val matchedSku = remember(product, selectedProps) {
+        product.skus.firstOrNull { it.properties == selectedProps }
+            ?: product.skus.firstOrNull()
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 16.dp),
+        ) {
+            // 主图
+            AsyncImage(
+                model = NetworkConfig.imageUrl(product.imageUrl),
+                contentDescription = product.title,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(180.dp)
+                    .clip(RoundedCornerShape(16.dp)),
+                contentScale = ContentScale.Crop,
+            )
+
+            Spacer(Modifier.height(12.dp))
+
+            // 品牌 + 商品名
+            Text(
+                product.brand,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.outline,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                product.title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+
+            Spacer(Modifier.height(8.dp))
+
+            // 当前匹配 SKU 的价格
+            Text(
+                "¥%.2f".format(matchedSku?.price ?: product.displayPrice),
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.error,
+                fontWeight = FontWeight.Bold,
+            )
+
+            Spacer(Modifier.height(16.dp))
+
+            // SKU 选择器：每个 property 一行 chips
+            propertyKeys.forEach { key ->
+                val values = product.skus.mapNotNull { it.properties[key] }.distinct()
+                Text(
+                    key,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    values.forEach { v ->
+                        val selected = selectedProps[key] == v
+                        FilterChip(
+                            selected = selected,
+                            onClick = { selectedProps = selectedProps + (key to v) },
+                            label = { Text(v, style = MaterialTheme.typography.bodySmall) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                            ),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+
+            // 营销文案（最多 4 行）
+            product.marketingDescription?.takeIf { it.isNotBlank() }?.let { desc ->
+                Text(
+                    desc,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(16.dp))
+            }
+
+            // 操作按钮
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            sheetState.hide()
+                            onDismiss()
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                ) { Text("继续看看") }
+
+                Button(
+                    onClick = {
+                        matchedSku?.let { onAddToCart(product.productId, it.skuId) }
+                    },
+                    modifier = Modifier.weight(1.2f),
+                    enabled = matchedSku != null,
+                ) { Text("加入购物车") }
             }
         }
     }

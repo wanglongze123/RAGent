@@ -39,6 +39,9 @@ class ChatRepository(
         sessionId = ""
     }
 
+    /** 商品详情（含 SKU 列表、营销文案、FAQ）— 供底部详情面板使用 */
+    suspend fun getProduct(productId: String): Product = apiService.getProduct(productId)
+
     /**
      * 发起对话，返回 Flow<ChatMessage>。
      * text_delta 事件由 ViewModel 负责累积成流式文字气泡，Repository 只负责解析单条事件。
