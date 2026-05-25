@@ -156,12 +156,10 @@ class SearchAgent:
             ).to_sse()
             return
 
-        # ── Step 2：候选集内排序（只做 Python 层硬过滤，不再调 ChromaDB）────
-        # 语义排序已由初次召回完成；候选集内的 ChromaDB $in 过滤不可靠，
-        # 会静默失效导致全局搜索污染结果（已验证 bug）。
-        # 非结构化属性（尺寸/功能）保留硬过滤结果，用户如需更精确可点「重新搜索」。
-        final_products = hard_filtered
+        # ── Step 2：属性过滤（从 query 中解析尺寸/容量等数值约束）────────
+        # 完全在 Python 层做，通过 title + SKU 属性的字符串匹配实现精确过滤
         effective_query = query or order_info.get("last_search_query", "")
+        final_products = _filter_by_numeric_attr(hard_filtered, effective_query)
 
         # ── Step 3：更新上下文并推送结果 ─────────────────────
         if effective_query:
@@ -450,6 +448,49 @@ _CATEGORY_HINTS: list[tuple[str, str]] = [
     (r"裤子|上衣|外套|衬衫|T恤|服装", "如：宽松、修身、防风、速干"),
     (r"洗面奶|洁面",               "如：温和清洁、控油、适合油皮/干皮"),
 ]
+
+
+def _filter_by_numeric_attr(products: list, query: str) -> list:
+    """
+    从 query 中解析数值属性约束，在候选集里精确过滤。
+    支持：X英寸以上/以下、X克以内、XGB以上 等模式。
+    匹配商品 title + SKU 属性值中的数字。
+    找不到约束或商品无对应属性时，不过滤（返回原列表）。
+    """
+    import re as _re2
+
+    # 解析约束：(数值, 单位, 方向)，如 (13, "英寸", "上") 或 (100, "g", "下")
+    _UNITS = r"英寸|寸|克|g|G|kg|KG|GB|MB|ml|mL|升|L"
+    m = _re2.search(
+        rf"(\d+(?:\.\d+)?)\s*({_UNITS})\s*(以上|及以上|以下|以内|以下)",
+        query,
+    )
+    if not m:
+        return products  # 没有数值约束，不过滤
+
+    threshold = float(m.group(1))
+    unit = m.group(2)
+    direction = m.group(3)  # "以上"/"及以上" 或 "以下"/"以内"
+    is_min = "上" in direction  # True = 大于等于，False = 小于等于
+
+    filtered = []
+    for product in products:
+        # 收集商品所有包含该单位的数值
+        search_text = product.title + " " + " ".join(
+            str(v)
+            for sku in product.skus
+            for v in sku.properties.values()
+        )
+        numbers = _re2.findall(rf"(\d+(?:\.\d+)?)\s*{_re2.escape(unit)}", search_text)
+        if not numbers:
+            filtered.append(product)  # 找不到对应属性，不过滤
+            continue
+        vals = [float(n) for n in numbers]
+        matched = (max(vals) >= threshold) if is_min else (min(vals) <= threshold)
+        if matched:
+            filtered.append(product)
+
+    return filtered if filtered else products  # 全过滤时兜底返回原列表
 
 
 def _get_category_hint(query: str) -> str:
