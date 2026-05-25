@@ -20,9 +20,9 @@ class AgentState(str, Enum):
 # ───── 每个状态允许路由的子 Agent ─────
 # 限制工具空间：子 Agent 越少，模型路由出错概率越低
 STATE_ALLOWED_AGENTS: dict[AgentState, list[str]] = {
-    AgentState.BROWSING:        ["search", "compare", "scene"],
-    AgentState.COMPARING:       ["search", "compare", "scene"],
-    AgentState.CART_MANAGEMENT: ["cart", "search", "scene"],
+    AgentState.BROWSING:        ["search", "compare", "scene", "product_inquiry"],
+    AgentState.COMPARING:       ["search", "compare", "scene", "product_inquiry"],
+    AgentState.CART_MANAGEMENT: ["cart", "search", "scene", "product_inquiry"],
     AgentState.CHECKOUT:        ["order"],   # 下单态严格限定，防止中途跑偏
 }
 

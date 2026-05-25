@@ -16,6 +16,7 @@ INTENT_CLASSIFICATION_PROMPT = """你是一个电商导购 AI 的意图分析模
 - cart_add：加入购物车
 - cart_manage：管理购物车（删除、修改数量、清空、查看）
 - checkout：准备下单、确认订单
+- product_inquiry：追问已展示商品的具体信息（规格、颜色、尺码、成分、FAQ等），不触发新搜索
 - clarify：用户在回答 AI 之前提出的澄清问题（如回复"200元以内"）
 - chitchat：闲聊，与购物无关
 

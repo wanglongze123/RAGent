@@ -28,14 +28,15 @@ from app.models import events as ev
 
 # 意图 → 子 Agent 名称映射
 _INTENT_TO_AGENT: dict[str, str] = {
-    "search":       "search",
-    "compare":      "compare",
-    "scene":        "scene",
-    "cart_add":     "cart",
-    "cart_manage":  "cart",
-    "checkout":     "order",
-    "clarify":      "search",   # 澄清回答归 search 处理
-    "chitchat":     "search",   # 闲聊兜底走 search
+    "search":           "search",
+    "compare":          "compare",
+    "scene":            "scene",
+    "cart_add":         "cart",
+    "cart_manage":      "cart",
+    "checkout":         "order",
+    "product_inquiry":  "product_inquiry",
+    "clarify":          "search",   # 澄清回答归 search 处理
+    "chitchat":         "search",   # 闲聊兜底走 search
 }
 
 
@@ -221,6 +222,11 @@ class MasterAgent:
           完全可以靠规则秒级判定，把 LLM 留给真正模糊的场景兜底。
         """
         current_state = session.get("agent_state", "browsing")
+
+        # product_inquiry 优先于 _quick_classify，防止"有什么/怎么样"被 search 关键词截走
+        if _is_product_inquiry(message, session):
+            return _quick_dict("product_inquiry", {"query": message})
+
         quick = _quick_classify(message, current_state)
         if quick is not None:
             return quick
@@ -264,13 +270,15 @@ class MasterAgent:
         from app.agent.sub_agents.scene_agent import scene_agent
         from app.agent.sub_agents.cart_agent import cart_agent
         from app.agent.sub_agents.order_agent import order_agent
+        from app.agent.sub_agents.product_inquiry_agent import product_inquiry_agent
 
         agents = {
-            "search":  search_agent,
-            "compare": compare_agent,
-            "scene":   scene_agent,
-            "cart":    cart_agent,
-            "order":   order_agent,
+            "search":           search_agent,
+            "compare":          compare_agent,
+            "scene":            scene_agent,
+            "cart":             cart_agent,
+            "order":            order_agent,
+            "product_inquiry":  product_inquiry_agent,
         }
         agent = agents.get(agent_name, search_agent)
         async for event_str in agent.run(
@@ -368,6 +376,40 @@ def _resolve_position_reference(
         params["product_id"] = last_shown[0].get("product_id", "")
 
     return params
+
+
+# ─────────────────────────────────────────────────────────
+# product_inquiry 检测 —— 优先于规则快速通道
+# ─────────────────────────────────────────────────────────
+
+# 指代已展示商品的词（"这款"/"那款"/"它"/"第一款"等）
+_PRODUCT_REF_WORDS = [
+    "这款", "这个", "这件", "这条", "这双", "这瓶", "这盒", "这套",
+    "那款", "那个", "那件", "那条", "那双", "那瓶", "那盒", "那套",
+    "它", "第一款", "第二款", "第三款", "第一个", "第二个", "第三个",
+    "上面的", "刚才的", "前面的", "刚才那款",
+]
+
+# 含这些词的消息应走其他意图，不走 product_inquiry
+_INQUIRY_EXCLUSIONS = [
+    "对比", "比较", "哪个更", "哪个好", "哪款更",   # → compare
+    "加购", "加入购物车", "买这个", "买它", "下单",  # → cart
+    "推荐", "找一款", "有没有", "求推荐",            # → search
+]
+
+
+def _is_product_inquiry(message: str, session: dict) -> bool:
+    """
+    判断是否为对已展示商品的追问：
+      1. 当前会话里有已展示商品
+      2. 消息含商品指代词
+      3. 消息不含对比/加购/新搜索等排除词
+    """
+    if not session.get("last_shown_products"):
+        return False
+    if any(k in message for k in _INQUIRY_EXCLUSIONS):
+        return False
+    return any(w in message for w in _PRODUCT_REF_WORDS)
 
 
 # ─────────────────────────────────────────────────────────

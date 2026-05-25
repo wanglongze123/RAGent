@@ -18,7 +18,7 @@ import time
 from typing import Any, AsyncIterator, Optional
 
 from app.llm.client import llm_client
-from app.llm.prompts import master, search, compare, cart, order, scene
+from app.llm.prompts import master, search, compare, cart, order, scene, product_inquiry
 
 
 # ───── 每个 Agent 允许使用的工具集（白名单制）─────
@@ -86,8 +86,9 @@ AGENT_PROMPTS: dict[str, str] = {
     "cart":           cart.CART_AGENT_PROMPT,
     "order":          order.ORDER_AGENT_PROMPT,
     # scene 复用同一 agent 名走两条不同提示词：规划阶段用 JSON Mode，生成阶段流式
-    "scene_planning": scene.SCENE_PLANNING_PROMPT,
-    "scene":          scene.SCENE_REASONING_PROMPT,
+    "scene_planning":    scene.SCENE_PLANNING_PROMPT,
+    "scene":             scene.SCENE_REASONING_PROMPT,
+    "product_inquiry":   product_inquiry.PRODUCT_INQUIRY_PROMPT,
 }
 
 
