@@ -61,6 +61,7 @@ class SearchAgent:
         # ── 模式3：重新搜索 / 都不是 ────────────────────────
         if "重新搜索" in query or "都不是" in query:
             order_info.pop("last_search_query", None)
+            order_info.pop("last_search_brands", None)   # 清除图片搜索的品牌缓存
             order_info.pop("search_questionnaire", None)
             await db.update_order_state(session_id, order_info)
             # 同时清空已展示商品，让下次模糊查询重新触发问卷
