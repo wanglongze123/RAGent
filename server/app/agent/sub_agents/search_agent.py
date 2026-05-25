@@ -1,27 +1,21 @@
 """
 Search Agent — 商品搜索与推荐。
 
-Skill 流程（固定步骤，不走 ReAct）：
+流程：
   Step 1: 解析结构化参数（价格区间、品牌排除、属性排除）
-  Step 2: 推 tool_progress 事件
-  Step 3: 调 hybrid_retriever 检索（结构化过滤 + 语义检索）
-  Step 4: 后处理过滤（品牌排除、属性排除）
-  Step 5: 推 product_card 事件（数据从 product_repo 取，不经模型）
-  Step 6: 流式生成推荐理由（经 middleware，带 RAG 上下文）
+  Step 2: 检索候选（图搜 / 文本检索）
+  Step 3: 硬过滤（品牌排除、属性排除）
+  Step 4: LLM 裁判 — 从候选中选出真正相关的 product_id（最多3个）
+  Step 5: 推商品卡片（只推裁判选中的）
+  Step 6: 流式生成推荐理由（与卡片完全同步）
 """
+import json as _json
 from typing import AsyncIterator
 
 from app.agent.middleware import middleware
 from app.db.product_repo import product_repo
 from app.models import events as ev
 from app.rag.hybrid_retriever import hybrid_retriever
-
-
-# 品牌类型 → 实际品牌名映射改为数据驱动：
-# product_repo 启动时按 product.region 字段聚合 {region: [brand,...]}，
-# 这里调 product_repo.brands_in_region("日系") 就能拿到全部日系品牌，
-# 加新品牌只需要在 product JSON 里写 region，零代码改动。
-# 别名（"国货" → "国产"）也由 product_repo 统一收口。
 
 
 class SearchAgent:
@@ -36,31 +30,22 @@ class SearchAgent:
     ) -> AsyncIterator[str]:
 
         # ── Step 1: 解析结构化参数 ──────────────────────────
-        query        = params.get("query") or message
-        price_max    = params.get("price_max")
-        price_min    = params.get("price_min")
-        excl_brands  = params.get("exclude_brands", [])
-        excl_attrs   = params.get("exclude_attrs", [])
+        query       = params.get("query") or message
+        price_max   = params.get("price_max")
+        price_min   = params.get("price_min")
+        excl_brands = params.get("exclude_brands", [])
+        excl_attrs  = params.get("exclude_attrs", [])
 
-        # 价格区间 → Chroma metadata filter
-        where = _build_price_filter(price_max, price_min)
+        where   = _build_price_filter(price_max, price_min)
+        fetch_k = 10   # 统一多取候选，交给 LLM 裁判精选
 
-        top_k = 5
-
-        # 相关性阈值：低于阈值的结果直接丢，不凑数发给用户
-        # BGE logit 无上界，~0 是分界线；Doubao 降级 reranker 输出 0~1
-        # 通过 reranker.available 判断当前用的哪个，选对应阈值
-        from app.rag.reranker import reranker as _reranker
-        RERANKER_MIN_SCORE = -0.5 if _reranker._bge.available else 0.4
-        IMAGE_MIN_SCORE    =  0.45  # 图搜余弦相似度阈值（0~1）
-
-        # ── Step 2-3: 检索（图搜 / 文本检索分两条路）────────
+        # ── Step 2: 检索候选 ────────────────────────────────
         if image_base64:
             yield ev.image_searching("正在分析图片…").to_sse()
             try:
                 ranked = await hybrid_retriever.retrieve_by_image(
                     image_base64=image_base64,
-                    top_k=top_k * 2,   # 多取一倍，过滤后再截断
+                    top_k=fetch_k,
                     where=where,
                 )
             except Exception as e:
@@ -68,71 +53,56 @@ class SearchAgent:
                 return
             if not ranked:
                 yield ev.text_delta(
-                    "图片索引为空或没找到匹配商品。请确认服务端跑过 `python -m scripts.build_index --with-images`。"
+                    "图片索引为空或没找到匹配商品，请确认服务端跑过 build_index --with-images。"
                 ).to_sse()
                 return
-            # 图搜场景下走 brand 硬过滤；attr 过滤需要 chunk 文本，跳过
-            if excl_brands:
-                ranked = _filter_brands(ranked, excl_brands)
-            # 余弦相似度过滤：过滤视觉上差异过大的结果
-            filtered = [r for r in ranked if r["score"] >= IMAGE_MIN_SCORE]
-            ranked = filtered if filtered else ranked[:1]
-
-            # 用户同时提供了文字（如"我就想要元气森林"）→ 用文字对图搜结果做二次精排
-            # 纯图搜无法区分同类目商品（饮料都长得像），文字能精确锁定品牌/型号
-            if query and len(ranked) > 1:
-                from app.rag.retriever import RetrievedChunk
-                from app.rag.reranker import reranker as _reranker
-                text_chunks = [
-                    RetrievedChunk(
-                        chunk_id=r["product_id"],
-                        product_id=r["product_id"],
-                        chunk_type="product_repr",
-                        content=(
-                            f"{r['metadata'].get('title', '')} "
-                            f"{r['metadata'].get('brand', '')} "
-                            f"{r['metadata'].get('sub_category', '')}"
-                        ),
-                        score=r["score"],
-                        metadata=r["metadata"],
-                    )
-                    for r in ranked
-                ]
-                reranked = await _reranker.rerank(query, text_chunks, top_k=len(text_chunks))
-                # 过滤掉 BGE 认为不相关的（负分）
-                relevant = [c for c in reranked if c.score >= RERANKER_MIN_SCORE]
-                if relevant:
-                    pid_order = [c.product_id for c in relevant]
-                    ranked = sorted(
-                        [r for r in ranked if r["product_id"] in pid_order],
-                        key=lambda r: pid_order.index(r["product_id"]),
-                    )
         else:
             yield ev.tool_progress("hybrid_search", "正在为您检索相关商品...").to_sse()
-            fetch_k = top_k * 2   # 多取，reranker 过滤后再截断
             ranked = await hybrid_retriever.retrieve_products(
                 query=query,
                 top_k_chunks=fetch_k * 3,
                 top_k_products=fetch_k,
                 where=where,
             )
-            if excl_brands:
-                ranked = _filter_brands(ranked, excl_brands)
-            if excl_attrs:
-                ranked = _filter_attrs(ranked, excl_attrs)
-            # BGE reranker 分数过滤：负分说明模型认为不相关，至少保留 1 个兜底
-            filtered = [r for r in ranked if r["score"] >= RERANKER_MIN_SCORE]
-            ranked = filtered if filtered else ranked[:1]
 
-        ranked = ranked[:top_k]
         if not ranked:
-            yield ev.text_delta(
-                "抱歉，根据您的条件暂时没有找到合适的商品，您可以调整一下筛选条件试试。"
-            ).to_sse()
+            yield ev.text_delta("抱歉，暂时没有找到合适的商品，您可以调整一下条件试试。").to_sse()
             return
 
-        # ── Step 4: 推商品卡片 ───────────────────────────────
-        # 关键：卡片字段全从 product_repo 取，不经大模型，杜绝价格/标题幻觉
+        # ── Step 3: 硬过滤（品牌 / 属性排除）──────────────
+        if excl_brands:
+            ranked = _filter_brands(ranked, excl_brands)
+        if excl_attrs and not image_base64:   # 图搜没有 chunk 文本，跳过属性过滤
+            ranked = _filter_attrs(ranked, excl_attrs)
+
+        if not ranked:
+            yield ev.text_delta("根据您的筛选条件，暂时没有找到合适的商品。").to_sse()
+            return
+
+        # ── Step 4: LLM 裁判 ────────────────────────────────
+        # 三种情况统一走裁判，裁判决定发哪些卡片：
+        #   纯文字   → query 即用户诉求，裁判直接判相关性
+        #   纯图片   → query 为空，裁判依据图搜排名+商品描述选最一致的
+        #   图片+文字 → query 即用户补充说明，裁判用文字精确过滤
+        if image_base64 and not query:
+            judge_query = "（用户上传了图片，以下是视觉相似的候选商品，请选出品类和风格最一致的）"
+        else:
+            judge_query = query
+
+        yield ev.tool_progress("llm_judge", "正在筛选最匹配的商品…").to_sse()
+        selected_ids = await _llm_judge(judge_query, ranked)
+
+        # 按裁判顺序重排；若裁判返回空则降级取前3
+        if selected_ids:
+            id_order = {pid: i for i, pid in enumerate(selected_ids)}
+            ranked = sorted(
+                [r for r in ranked if r["product_id"] in id_order],
+                key=lambda r: id_order[r["product_id"]],
+            )
+        else:
+            ranked = ranked[:3]
+
+        # ── Step 5: 推商品卡片（与 Step 6 的 context 完全同步）──
         context_parts: list[str] = []
         for rp in ranked:
             product = product_repo.get(rp["product_id"])
@@ -148,26 +118,26 @@ class SearchAgent:
                 sub_category=product.sub_category,
             ).to_sse()
 
-            # 给 LLM 的资料：标题 + 最相关的 chunk（文本检索）/ 营销描述（图搜）
+            # 文本资料：文本检索有 hit_chunks；图搜用 marketing_description
             if rp.get("hit_chunks"):
                 chunk_texts = "\n".join(c.content for c in rp["hit_chunks"][:3])
             else:
-                # 图搜场景没 chunk，从 product_repo 取 marketing_description 兜底
-                mk = ""
-                if product.rag_knowledge:
-                    mk = product.rag_knowledge.marketing_description or ""
+                mk = (product.rag_knowledge.marketing_description or "") if product.rag_knowledge else ""
                 chunk_texts = mk[:600]
+
             context_parts.append(
                 f"【{product.title}】\n品牌: {product.brand} | 类目: {product.sub_category}\n{chunk_texts}"
             )
 
-        # ── Step 5: 流式生成推荐理由 ─────────────────────────
+        if not context_parts:
+            yield ev.text_delta("抱歉，商品信息暂时无法获取。").to_sse()
+            return
+
+        # ── Step 6: 流式生成推荐理由 ────────────────────────
         context = "\n\n---\n\n".join(context_parts)
 
-        # 对话历史从 session 的 recent_messages 取（由 master_agent 在 dispatch 前写入）
         history = session.get("recent_messages", [])
-        # 图搜场景：历史里的 [图片] 占位符会让文本模型误以为要处理图像而说"看不到图"
-        # 替换成中性描述，让模型专注于商品推荐
+
         def _clean_content(role: str, content: str) -> str:
             if role == "user" and content == "[图片]":
                 return "（图片搜索）"
@@ -178,7 +148,6 @@ class SearchAgent:
             for m in history[-4:]
         ]
 
-        # 当前轮的有效消息：文本模型看不到图，用文字告知上下文
         if image_base64 and not message.strip():
             effective_message = "根据图片为我推荐相似款商品"
         elif image_base64:
@@ -199,11 +168,48 @@ class SearchAgent:
 
 
 # ─────────────────────────────────────────────────────────
+# LLM 裁判
+# ─────────────────────────────────────────────────────────
+
+async def _llm_judge(judge_query: str, candidates: list[dict]) -> list[str]:
+    """
+    从候选商品中选出真正符合 query 的 product_id 列表（最多3个）。
+    失败时降级返回前3个。
+    """
+    if not candidates:
+        return []
+
+    lines = [
+        f"- id={r['product_id']} 《{r['metadata'].get('title', '')}》 "
+        f"品牌:{r['metadata'].get('brand', '')} 类目:{r['metadata'].get('sub_category', '')}"
+        for r in candidates
+    ]
+
+    try:
+        raw = await middleware.chat(
+            agent_name="search_judge",
+            user_messages=[{
+                "role": "user",
+                "content": f"用户需求：{judge_query}\n\n候选商品：\n" + "\n".join(lines),
+            }],
+            json_mode=True,
+            temperature=0.0,
+        )
+        result = _json.loads(raw)
+        selected = result.get("selected_ids", [])
+        valid = {r["product_id"] for r in candidates}
+        filtered = [pid for pid in selected if pid in valid]
+        return filtered if filtered else [r["product_id"] for r in candidates[:3]]
+    except Exception as e:
+        print(f"[search_judge] 调用失败，降级 top-3: {e}")
+        return [r["product_id"] for r in candidates[:3]]
+
+
+# ─────────────────────────────────────────────────────────
 # 工具函数
 # ─────────────────────────────────────────────────────────
 
 def _build_price_filter(price_max, price_min) -> dict | None:
-    """价格区间 → Chroma where 条件"""
     conditions = []
     if price_max is not None:
         conditions.append({"base_price": {"$lte": float(price_max)}})
@@ -215,22 +221,13 @@ def _build_price_filter(price_max, price_min) -> dict | None:
 
 
 def _filter_brands(ranked: list[dict], excl_brands: list[str]) -> list[dict]:
-    """
-    品牌排除过滤。
-    用户可能说"不要日系"（类型词）或"不要资生堂"（具体品牌名）。
-    先把类型词展开成 product_repo 里该地域的所有品牌，再做精确匹配。
-    这一步是硬过滤：代码保证 100% 生效，不依赖模型判断。
-    """
     excluded: set[str] = set()
     for b in excl_brands:
-        # 类型词 → 数据库里这个地域下的所有品牌（数据驱动，新增品牌自动生效）
         regional = product_repo.brands_in_region(b)
         if regional:
             excluded.update(regional)
         else:
-            # 不是地域词就当具体品牌名处理
             excluded.add(b)
-
     return [
         rp for rp in ranked
         if not any(ex in rp["metadata"].get("brand", "") for ex in excluded)
@@ -238,11 +235,6 @@ def _filter_brands(ranked: list[dict], excl_brands: list[str]) -> list[dict]:
 
 
 def _filter_attrs(ranked: list[dict], excl_attrs: list[str]) -> list[dict]:
-    """
-    属性排除过滤。
-    检查商品的 chunk 内容里是否明确提到排除属性。
-    如"不含酒精"→ 过滤掉 chunk 里提到"酒精"的商品。
-    """
     result = []
     for rp in ranked:
         chunk_contents = " ".join(c.content for c in rp.get("hit_chunks", []))

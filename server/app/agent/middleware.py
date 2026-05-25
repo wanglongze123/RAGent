@@ -81,6 +81,7 @@ AGENT_TOOLS: dict[str, list[dict]] = {
 AGENT_PROMPTS: dict[str, str] = {
     "master":         master.INTENT_CLASSIFICATION_PROMPT,
     "search":         search.SEARCH_AGENT_PROMPT,
+    "search_judge":   search.SEARCH_JUDGE_PROMPT,
     "compare":        compare.COMPARE_AGENT_PROMPT,
     "cart":           cart.CART_AGENT_PROMPT,
     "order":          order.ORDER_AGENT_PROMPT,
