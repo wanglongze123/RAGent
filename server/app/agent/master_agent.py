@@ -117,9 +117,14 @@ class MasterAgent:
             yield ev.done(session_id, current_state.value).to_sse()
             return
 
-        # ── 6. 文字搜索：模糊 query 触发问卷（图搜直接出结果）──
+        # ── 6. 文字搜索：模糊 query 触发问卷（图搜 / 有上下文时直接出结果）──
         if intent == "search" and not image_base64 and not params.get("questionnaire_reply"):
-            if not _is_query_specific_enough(params):
+            # 用户已在搜索上下文中（看过结果 / 有历史 query） → 细化，不重新触发问卷
+            has_search_context = bool(
+                session.get("last_shown_products") or
+                (session.get("order_state") or {}).get("last_search_query")
+            )
+            if not has_search_context and not _is_query_specific_enough(params):
                 params = dict(params)
                 params["_needs_questionnaire"] = True
 
@@ -420,18 +425,18 @@ _INQUIRY_EXCLUSIONS = [
 def _is_query_specific_enough(params: dict) -> bool:
     """
     判断搜索 query 是否已有足够结构化约束，可以直接检索。
-    若只有 2-4 字的品类词（"跑鞋"/"面霜"），则需要先走问卷收集需求。
-    有价格 / 品牌排除 / 较长修饰词 中任意一个 → 直接搜索。
+    规则：有价格 / 品牌过滤 / 3字以上有意义修饰词 → 直接搜索。
+    只有 2 字以内的纯品类词（"跑鞋"/"面霜"）→ 触发问卷。
+    注：有搜索上下文时（last_shown_products 存在）不会进入此函数。
     """
     if params.get("price_max") or params.get("price_min"):
         return True
-    if params.get("exclude_brands"):
+    if params.get("exclude_brands") or params.get("include_brands"):
         return True
     query = params.get("query", "")
-    # 去掉常见泛义词后，剩余超过 4 字说明有功能修饰
     filler = {"推荐", "帮我", "找", "买", "看看", "介绍", "好的", "想要", "想买"}
     meaningful = "".join(c for c in query if c not in "".join(filler))
-    return len(meaningful) > 4
+    return len(meaningful) >= 3  # 3字以上（"纯牛奶"/"防水跑鞋"/"蒙牛牌子"等）直接搜
 
 
 def _is_product_inquiry(message: str, session: dict) -> bool:
