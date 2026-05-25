@@ -291,7 +291,7 @@ class CartAgent:
         yield ev.text_delta("\n".join(lines)).to_sse()
         yield ev.clarification(
             question="接下来？",
-            options=["帮我下单", "清空购物车"],
+            options=["帮我下单"],
         ).to_sse()
 
     async def _handle_interpret(

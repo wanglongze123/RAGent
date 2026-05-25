@@ -259,9 +259,12 @@ class SearchAgent:
             questionnaire.update({"step": 3, "collected": collected})
             order_info["search_questionnaire"] = questionnaire
             await db.update_order_state(session_id, order_info)
+            # 品类快捷选项 + 跳过；用户也可直接在输入框打字
+            quick_opts = _get_category_options(original)
+            options = quick_opts + ["没有，直接搜索"]
             yield ev.clarification(
-                question=f"还有什么特别要求吗？（{hint}）",
-                options=["没有，直接搜索"],
+                question=f"还有什么特别要求吗？（{hint}，也可直接输入）",
+                options=options,
             ).to_sse()
             return
 
@@ -443,12 +446,15 @@ class SearchAgent:
 # 问卷辅助函数
 # ─────────────────────────────────────────────────────────
 
-_CATEGORY_HINTS: list[tuple[str, str]] = [
-    (r"跑鞋|运动鞋|球鞋|跑步",     "如：轻量、防水、缓震"),
-    (r"面霜|精华|护肤|乳液|化妆品", "如：敏感肌适用、补水、美白、无酒精"),
-    (r"饮料|矿泉水|茶|咖啡|汽水",   "如：无糖、低卡、口味偏好"),
-    (r"裤子|上衣|外套|衬衫|T恤|服装", "如：宽松、修身、防风、速干"),
-    (r"洗面奶|洁面",               "如：温和清洁、控油、适合油皮/干皮"),
+# (正则, 提示文字, 快捷选项列表)
+_CATEGORY_HINTS: list[tuple[str, str, list]] = [
+    (r"跑鞋|运动鞋|球鞋|跑步",      "如：轻量、防水、缓震",        ["防水", "轻量", "缓震"]),
+    (r"面霜|精华|护肤|乳液|化妆品",  "如：补水、美白、适合敏感肌",  ["补水保湿", "美白淡斑", "适合敏感肌"]),
+    (r"饮料|矿泉水|茶|咖啡|汽水",    "如：无糖、小瓶、整箱",        ["无糖低卡", "小瓶装", "整箱购买"]),
+    (r"裤子|上衣|外套|衬衫|T恤|服装","如：宽松、修身、速干",        ["宽松舒适", "修身显瘦", "速干防风"]),
+    (r"洗面奶|洁面",                "如：控油、温和、敏感肌",       ["控油清洁", "温和不刺激", "适合敏感肌"]),
+    (r"笔记本|电脑|平板",            "如：轻薄、大屏、长续航",       ["轻薄便携", "大屏", "长续航"]),
+    (r"手机",                       "如：拍照、大电池、轻薄",       ["拍照性能好", "大电池", "轻薄"]),
 ]
 
 
@@ -496,10 +502,18 @@ def _filter_by_numeric_attr(products: list, query: str) -> list:
 
 
 def _get_category_hint(query: str) -> str:
-    for pattern, hint in _CATEGORY_HINTS:
+    for pattern, hint, _ in _CATEGORY_HINTS:
         if _re.search(pattern, query):
             return hint
     return "如：特定功能、款式偏好、颜色材质"
+
+
+def _get_category_options(query: str) -> list:
+    """返回品类专属快捷需求选项（用于问卷第三步）"""
+    for pattern, _, options in _CATEGORY_HINTS:
+        if _re.search(pattern, query):
+            return options
+    return []
 
 
 def _parse_price_option(message: str):
