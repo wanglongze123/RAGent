@@ -32,84 +32,58 @@ class CompareAgent:
         image_base64: str | None = None,
     ) -> AsyncIterator[str]:
 
-        yield ev.tool_progress("compare", "正在检索对比商品信息...").to_sse()
+        yield ev.tool_progress("compare", "正在生成对比分析...").to_sse()
 
-        # ── Step 1: 商品识别 ─────────────────────────────────
+        # ── Step 1: 商品识别（支持最多 5 款）──────────────────
         product_ids = await self._resolve_products(params, session, message)
 
         if len(product_ids) < 2:
             yield ev.text_delta(
-                "请告诉我您想对比哪两款商品，例如：对比雅诗兰黛小棕瓶和SK-II神仙水。"
+                "请告诉我您想对比哪几款商品，例如：对比这几款面霜哪个更好。"
             ).to_sse()
             return
 
-        # 只对比前两个（多了表格太宽，用户看不过来）
-        pid_a, pid_b = product_ids[0], product_ids[1]
-        product_a = product_repo.get(pid_a)
-        product_b = product_repo.get(pid_b)
-
-        if not product_a or not product_b:
+        products = [p for pid in product_ids if (p := product_repo.get(pid))]
+        if len(products) < 2:
             yield ev.text_delta("抱歉，未能找到对应商品，请确认商品名称后重试。").to_sse()
             return
 
-        # ── Step 2: 并行检索两个商品的 chunk ────────────────
-        results_a, results_b = await asyncio.gather(
-            hybrid_retriever.retrieve_products(
-                query=product_a.title,
-                top_k_chunks=12,
-                top_k_products=1,
-            ),
-            hybrid_retriever.retrieve_products(
-                query=product_b.title,
-                top_k_chunks=12,
-                top_k_products=1,
-            ),
-        )
+        # ── Step 2: 直接从 product_repo 构建对比上下文（无需检索）──
+        _CN = ["第一款", "第二款", "第三款", "第四款", "第五款"]
+        context_blocks = []
+        for i, product in enumerate(products):
+            min_price = min((s.price for s in product.skus), default=product.base_price)
+            props = list(product.skus[0].properties.items())[:3] if product.skus else []
+            props_text = "\n".join(f"{k}  {v}" for k, v in props)
+            desc = ""
+            if product.rag_knowledge and product.rag_knowledge.marketing_description:
+                desc = f"简介  {product.rag_knowledge.marketing_description[:150]}"
+            block = (
+                f"{_CN[i]}  {product.brand}  {product.display_title}\n"
+                f"价格  ¥{min_price:.0f} 起\n"
+                f"{props_text}\n"
+                f"{desc}"
+            ).strip()
+            context_blocks.append(block)
 
-        context_a = _build_product_context(product_a, results_a)
-        context_b = _build_product_context(product_b, results_b)
+        context = "\n\n".join(context_blocks)
 
-        # ── Step 3: 维度提取（JSON Mode）────────────────────
-        dimensions = await self._extract_dimensions(context_a, context_b, message)
-
-        # ── Step 4: 推对比表格事件 ───────────────────────────
-        # 价格/标题/图片全从 product_repo 取，不经模型
-        comparison_data = {
-            "products": [
-                {
-                    "product_id": product_a.product_id,
-                    "title": product_a.title,
-                    "price": product_a.base_price,
-                    "image_url": product_a.image_url,
-                },
-                {
-                    "product_id": product_b.product_id,
-                    "title": product_b.title,
-                    "price": product_b.base_price,
-                    "image_url": product_b.image_url,
-                },
-            ],
-            "dimensions": dimensions,
-            "recommendation": None,  # 推荐理由在 Step 5 生成后补充
-        }
-        yield ev.SSEEvent(
-            type=ev.EventType.COMPARISON_TABLE,
-            data=comparison_data,
-        ).to_sse()
-
-        # ── Step 5: 流式生成推荐理由 ─────────────────────────
-        user_messages = [{"role": "user", "content": message}]
-        context_for_llm = (
-            f"【商品A】{product_a.title}\n{context_a}\n\n"
-            f"【商品B】{product_b.title}\n{context_b}"
-        )
+        # ── Step 3: LLM 生成竖排对比文字（流式）────────────────
         async for token in middleware.chat_stream(
             agent_name="compare",
-            user_messages=user_messages,
-            prompt_vars={"context": context_for_llm},
-            temperature=0.7,
+            user_messages=[{"role": "user", "content": message or "对比这几款商品"}],
+            prompt_vars={"context": context},
+            temperature=0.6,
         ):
             yield ev.text_delta(token).to_sse()
+
+        # ── Step 4: 分款加购按钮 ─────────────────────────────
+        buy_options = [f"加购{_CN[i]}" for i in range(len(products))]
+        buy_options.append("重新搜索")
+        yield ev.clarification(
+            question="需要帮您加入购物车吗？",
+            options=buy_options,
+        ).to_sse()
 
     # ─────────────────────────────────────────────────────
     # 私有方法
@@ -145,9 +119,9 @@ class CompareAgent:
                 )
                 if results:
                     product_ids.append(results[0]["product_id"])
-        elif last_shown and len(last_shown) >= 2:
-            # 用最近展示的前两个
-            product_ids = [p["product_id"] for p in last_shown[:2]]
+        elif last_shown:
+            # 用最近展示的全部商品（最多5款）
+            product_ids = [p["product_id"] for p in last_shown[:5]]
 
         return product_ids
 
