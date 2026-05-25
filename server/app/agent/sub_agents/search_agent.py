@@ -122,28 +122,20 @@ class SearchAgent:
         else:
             ranked = ranked[:3]
 
-        # ── Step 5: 推商品卡片 ───────────────────────────────
+        # ── Step 5: 收集商品 ─────────────────────────────────
         shown_products = []
         for rp in ranked:
             product = product_repo.get(rp["product_id"])
-            if not product:
-                continue
-            yield ev.product_card(
-                product_id=product.product_id,
-                title=product.display_title,
-                brand=product.brand,
-                image_url=product.image_url,
-                price=product.base_price,
-                sub_category=product.sub_category,
-            ).to_sse()
-            shown_products.append(product)
+            if product:
+                shown_products.append(product)
 
         if not shown_products:
             yield ev.text_delta("抱歉，商品信息暂时无法获取。").to_sse()
             return
 
-        # ── Step 6: 一句话引导 + 商品选择框 ─────────────────
-        # 不再自动输出大段推荐文字，让用户主动选择感兴趣的款式
+        # ── Step 6: 一句话引导 + product_card_list 批量事件 ──
+        # 客户端用 HorizontalPager 横滑展示，点击卡片直接打开底部详情面板。
+        # 不再为每款商品单独配文字描述（用户用得上时点开看，避免一墙字）。
         intro = (
             "根据您上传的图片，为您找到以下相似款："
             if image_base64 else
@@ -151,16 +143,26 @@ class SearchAgent:
         )
         yield ev.text_delta(intro).to_sse()
 
-        _CN = ["一", "二", "三"]
-        options = [
-            f"第{_CN[i]}款：{p.display_title[:14]}"
-            for i, p in enumerate(shown_products)
+        products_payload = [
+            {
+                "product_id": p.product_id,
+                "title": p.display_title,
+                "brand": p.brand,
+                "image_url": p.image_url,
+                "price": p.base_price,
+                "sub_category": p.sub_category,
+            }
+            for p in shown_products
         ]
-        options.append("都不是，换个方式找")
+        yield ev.product_card_list(
+            products=products_payload,
+            search_type="image" if image_base64 else "text",
+        ).to_sse()
 
+        # 卡片下方仅留两个全局动作；查看详情/加购通过点击卡片在客户端本地完成
         yield ev.clarification(
-            question="以上商品有您想要的吗？",
-            options=options,
+            question="您可以横向滑动查看所有商品，或：",
+            options=["对比这几款", "都不是，换个方式找"],
         ).to_sse()
 
 
