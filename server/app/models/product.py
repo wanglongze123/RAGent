@@ -3,11 +3,15 @@ import re
 from typing import Optional
 from pydantic import BaseModel, Field
 
-_UNITS = r"ml|mL|ML|L|g|G|kg|KG|mg|GB|MB|TB|cm|mm|克|升|毫升|%"
+_UNITS = r"ml|mL|ML|L|g|G|kg|KG|mg|GB|MB|TB|cm|mm|克|升|毫升|条|颗|粒|袋|罐|桶|瓶|盒|箱|包|个|块|片"
 # 末尾规格：直接拼在词尾，无空格（美妆常见，如 "精华30ml"）
 _TRAILING_SPEC_RE = re.compile(rf'\d+(?:\.\d+)?\s*(?:{_UNITS})\s*$')
 # 中间规格：前面有空格（食品/饮料常见，如 " 445ml×15 瓶装..."）
 _INLINE_SPEC_RE   = re.compile(rf'\s+\d+(?:\.\d+)?\s*(?:{_UNITS})')
+# 中文直连规格：中文字符后紧跟数字+单位，无空格（如 "牛肉面110g*12桶装..."）
+_CHINESE_SPEC_RE  = re.compile(
+    rf'(?<=[一-鿿])\d+(?:\.\d+)?\s*(?:{_UNITS}).*$'
+)
 
 
 class SKU(BaseModel):
@@ -60,9 +64,11 @@ class Product(BaseModel):
           步骤2：在第一个'空格+数字+单位'处截断（食品：'...饮料 445ml×...' → '...饮料'）
         """
         t = _TRAILING_SPEC_RE.sub("", self.title).strip()
-        m = _INLINE_SPEC_RE.search(t)
-        if m:
-            t = t[:m.start()].strip()
+        for pattern in (_INLINE_SPEC_RE, _CHINESE_SPEC_RE):
+            m = pattern.search(t)
+            if m:
+                t = t[:m.start()].strip()
+                break
         return t if len(t) >= 4 else self.title
 
 
