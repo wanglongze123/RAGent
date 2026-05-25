@@ -9,11 +9,16 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
 import java.io.File
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -37,6 +42,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -64,6 +71,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -357,7 +365,7 @@ private fun MessageItem(
         is ChatMessage.AiText -> AiTextBubble(message.text, message.isStreaming)
         is ChatMessage.AiStatus -> StatusBubble(message.message)
         is ChatMessage.AiProductCard -> ProductCardMessage(message.product, onProductClick)
-        is ChatMessage.AiProductList -> ProductListMessage(message.products, onProductClick)
+        is ChatMessage.AiProductList -> ProductCarousel(message.products, onProductClick, onOptionSelected)
         is ChatMessage.AiComparison -> ComparisonMessage(message.table, onProductClick)
         is ChatMessage.AiClarification -> ClarificationMessage(message.question, message.options, onOptionSelected)
         is ChatMessage.AiError -> ErrorBubble(message.message)
@@ -493,25 +501,83 @@ private fun ProductCardMessage(product: Product, onProductClick: (String) -> Uni
 }
 
 @Composable
-private fun ProductListMessage(products: List<Product>, onProductClick: (String) -> Unit) {
-    Column {
-        Text("为您找到 ${products.size} 款商品", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.outline)
-        Spacer(Modifier.height(6.dp))
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(products) { product ->
-                ProductCardCompact(product, onProductClick)
+private fun ProductCarousel(
+    products: List<Product>,
+    onProductClick: (String) -> Unit,
+    onOptionSelected: (String) -> Unit,
+) {
+    if (products.isEmpty()) return
+    val pagerState = rememberPagerState(pageCount = { products.size })
+    Column(modifier = Modifier.fillMaxWidth()) {
+        HorizontalPager(
+            state = pagerState,
+            contentPadding = PaddingValues(horizontal = 8.dp),
+            pageSpacing = 12.dp,
+            modifier = Modifier.fillMaxWidth(),
+        ) { page ->
+            ProductCardLarge(products[page]) { onProductClick(products[page].productId) }
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        // 页码指示点
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            repeat(products.size) { i ->
+                val selected = i == pagerState.currentPage
+                Box(
+                    modifier = Modifier
+                        .padding(horizontal = 3.dp)
+                        .size(if (selected) 8.dp else 6.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (selected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                        )
+                )
+            }
+        }
+
+        // 滑到最后一页时淡入"重新搜索"提示
+        AnimatedVisibility(
+            visible = pagerState.currentPage == products.size - 1 && products.size > 1,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically(),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "没找到合适的？",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+                TextButton(
+                    onClick = { onOptionSelected("都不是，换个方式找") },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                ) {
+                    Text("重新搜索", style = MaterialTheme.typography.bodySmall)
+                }
             }
         }
     }
 }
 
 @Composable
-private fun ProductCardCompact(product: Product, onClick: (String) -> Unit) {
+private fun ProductCardLarge(product: Product, onClick: () -> Unit) {
     Card(
         modifier = Modifier
-            .width(140.dp)
-            .clickable { onClick(product.productId) },
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+            .fillMaxWidth()
+            .clickable { onClick() },
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+        shape = RoundedCornerShape(20.dp),
     ) {
         Column {
             AsyncImage(
@@ -519,13 +585,30 @@ private fun ProductCardCompact(product: Product, onClick: (String) -> Unit) {
                 contentDescription = product.title,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(120.dp),
+                    .height(200.dp),
                 contentScale = ContentScale.Crop,
             )
-            Column(modifier = Modifier.padding(8.dp)) {
-                Text(product.title, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    product.brand,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
                 Spacer(Modifier.height(2.dp))
-                Text("¥%.2f".format(product.displayPrice), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    product.title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "¥%.2f 起".format(product.displayPrice),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.Bold,
+                )
             }
         }
     }
