@@ -416,7 +416,7 @@ def _is_product_inquiry(message: str, session: dict) -> bool:
 # 规则快速通道（_quick_classify）—— 让常见意图秒级判定，避开 LLM 的 5-15s 延迟
 # ─────────────────────────────────────────────────────────
 
-_CART_ADD_KEYWORDS = ["加购", "加入购物车", "买这个", "买它", "下单这个"]
+_CART_ADD_KEYWORDS = ["加购", "加入购物车", "买这个", "买它", "下单这个", "重新加入", "再加"]
 _CART_REMOVE_KEYWORDS = ["删除", "移除", "去掉", "不要这个"]
 _CART_VIEW_KEYWORDS = ["查看购物车", "看看购物车", "我的购物车", "购物车里有"]
 _CART_CLEAR_KEYWORDS = ["清空购物车", "全部删除", "都不要了"]
@@ -465,6 +465,14 @@ def _quick_classify(message: str, current_state: str) -> Optional[dict]:
     if any(k in msg for k in _CART_VIEW_KEYWORDS):
         return _quick_dict("cart_manage", {"cart_action": "view"})
 
+    # cart_add 优先于 cart_clear：防止"帮我重新加入购物车"被"清空购物车"截走
+    if any(k in msg for k in _CART_ADD_KEYWORDS):
+        params: dict = {"cart_action": "add"}
+        pos_match = _POSITION_RE.search(msg)
+        if pos_match:
+            params["product_id"] = pos_match.group()
+        return _quick_dict("cart_add", params)
+
     if any(k in msg for k in _CART_CLEAR_KEYWORDS):
         return _quick_dict("cart_manage", {"cart_action": "clear"})
 
@@ -480,13 +488,6 @@ def _quick_classify(message: str, current_state: str) -> Optional[dict]:
 
     if any(k in msg for k in _CART_REMOVE_KEYWORDS) and current_state == "cart_management":
         return _quick_dict("cart_manage", {"cart_action": "remove"})
-
-    if any(k in msg for k in _CART_ADD_KEYWORDS):
-        params: dict = {"cart_action": "add"}
-        pos_match = _POSITION_RE.search(msg)
-        if pos_match:
-            params["product_id"] = pos_match.group()
-        return _quick_dict("cart_add", params)
 
     if any(k in msg for k in _CHECKOUT_KEYWORDS):
         return _quick_dict("checkout", {})
