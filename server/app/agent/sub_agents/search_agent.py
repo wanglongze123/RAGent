@@ -123,17 +123,25 @@ class SearchAgent:
 
         # 对话历史从 session 的 recent_messages 取（由 master_agent 在 dispatch 前写入）
         history = session.get("recent_messages", [])
+        # 图搜场景：历史里的 [图片] 占位符会让文本模型误以为要处理图像而说"看不到图"
+        # 替换成中性描述，让模型专注于商品推荐
+        def _clean_content(role: str, content: str) -> str:
+            if role == "user" and content == "[图片]":
+                return "（图片搜索）"
+            return content
+
         user_messages = [
-            {"role": m["role"], "content": m["content"]}
+            {"role": m["role"], "content": _clean_content(m["role"], m["content"])}
             for m in history[-4:]
         ]
-        # 图搜场景：把"用户传了图"显式告诉模型，不然它对着空白消息生成尴尬
-        # （Doubao 文本模型不接受图本身，所以这里只能用文字暗示）
-        effective_message = message
+
+        # 当前轮的有效消息：文本模型看不到图，用文字告知上下文
         if image_base64 and not message.strip():
-            effective_message = "（用户上传了一张图片，请基于以下检索到的商品介绍它们）"
+            effective_message = "根据图片为我推荐相似款商品"
         elif image_base64:
-            effective_message = f"（用户上传了一张图片，并说：{message}）"
+            effective_message = f"根据图片推荐相似款，我的额外要求：{message}"
+        else:
+            effective_message = message
 
         if not user_messages or user_messages[-1]["content"] != effective_message:
             user_messages.append({"role": "user", "content": effective_message})
