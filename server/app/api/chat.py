@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 
 from app.agent.master_agent import master_agent
 from app.db.relational import create_session, get_session
-from app.models import ChatRequest, SessionCreateResponse
+from app.models import ChatRequest, ImageSearchRequest, SessionCreateResponse
 from app.models import events as ev
 
 router = APIRouter()
@@ -38,6 +38,33 @@ async def chat_stream(req: ChatRequest):
             async for event_str in master_agent.run(
                 session_id=req.session_id,
                 message=req.message,
+                image_base64=req.image_base64,
+            ):
+                yield event_str
+        except Exception as e:
+            yield ev.error("INTERNAL_ERROR", str(e)).to_sse()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/search/by-image")
+async def search_by_image(req: ImageSearchRequest):
+    session = await get_session(req.session_id)
+    if not session:
+        await create_session(req.session_id)
+
+    async def event_stream():
+        try:
+            async for event_str in master_agent.run(
+                session_id=req.session_id,
+                message="",
                 image_base64=req.image_base64,
             ):
                 yield event_str
