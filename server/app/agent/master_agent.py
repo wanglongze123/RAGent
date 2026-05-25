@@ -227,7 +227,9 @@ class MasterAgent:
         if _is_product_inquiry(message, session):
             return _quick_dict("product_inquiry", {"query": message})
 
-        quick = _quick_classify(message, current_state)
+        order_state = session.get("order_state") or {}
+        has_pending_sku = bool(order_state.get("pending_sku_product_id"))
+        quick = _quick_classify(message, current_state, has_pending_sku)
         if quick is not None:
             return quick
 
@@ -417,14 +419,9 @@ def _is_product_inquiry(message: str, session: dict) -> bool:
 # ─────────────────────────────────────────────────────────
 
 _CART_ADD_KEYWORDS = ["加购", "加入购物车", "买这个", "买它", "下单这个", "重新加入", "再加"]
-_CART_REMOVE_KEYWORDS = ["删除", "移除", "去掉", "不要这个"]
 _CART_VIEW_KEYWORDS = ["查看购物车", "看看购物车", "我的购物车", "购物车里有"]
 _CART_CLEAR_KEYWORDS = ["清空购物车", "全部删除", "都不要了"]
-_CART_UPDATE_PATTERNS = [re.compile(p) for p in [
-    r"改成\s*\d+\s*(件|个|份)",
-    r"数量\s*改",
-    r"调整为\s*\d+",
-]]
+# 删除/修改数量等含参数的操作不走规则，交给 LLM 解析（口语太多样，规则覆盖不全）
 
 _CHECKOUT_KEYWORDS = ["我要下单", "去结账", "结算订单", "提交订单", "我要付款"]
 _CHECKOUT_AMBIGUOUS = ["下单", "结账", "购买"]
@@ -445,10 +442,9 @@ _SEARCH_KEYWORDS = [
 ]
 
 _POSITION_RE = re.compile(r"第[一二三四五12345]+(个|款|项|件)?")
-_QUANTITY_RE = re.compile(r"改成\s*(\d+)\s*(件|个|份)?|(\d+)\s*(件|个|份)")
 
 
-def _quick_classify(message: str, current_state: str) -> Optional[dict]:
+def _quick_classify(message: str, current_state: str, has_pending_sku: bool = False) -> Optional[dict]:  # noqa: E501
     """
     用纯规则判定意图。返回 LLM JSON 同构 dict，或 None（让 LLM 兜底）。
 
@@ -476,18 +472,8 @@ def _quick_classify(message: str, current_state: str) -> Optional[dict]:
     if any(k in msg for k in _CART_CLEAR_KEYWORDS):
         return _quick_dict("cart_manage", {"cart_action": "clear"})
 
-    if any(p.search(msg) for p in _CART_UPDATE_PATTERNS) and current_state == "cart_management":
-        qty = None
-        m = _QUANTITY_RE.search(msg)
-        if m:
-            qty = int(m.group(1) or m.group(3))
-        return _quick_dict(
-            "cart_manage",
-            {"cart_action": "update_quantity", "quantity": qty},
-        )
-
-    if any(k in msg for k in _CART_REMOVE_KEYWORDS) and current_state == "cart_management":
-        return _quick_dict("cart_manage", {"cart_action": "remove"})
+    # 删除 / 改数量：口语表达多样（"减掉一件"/"只要一个"/"去掉第二个"），
+    # 规则无法全覆盖，统一交给 LLM 解析具体参数
 
     if any(k in msg for k in _CHECKOUT_KEYWORDS):
         return _quick_dict("checkout", {})
@@ -508,10 +494,9 @@ def _quick_classify(message: str, current_state: str) -> Optional[dict]:
         # _enrich_filters_from_message 会抽品牌/属性排除。LLM 的活规则替了
         return _quick_dict("search", {"query": msg})
 
-    # cart_management 下任何没规则命中的消息默认接续上轮 cart_add：
-    # 多半是用户回答 SKU 规格（"120g 标准装"），让 cart_agent 内部根据
-    # pending_sku_product_id 处理。原本 master 把这类走 LLM 兜底要 13s。
-    if current_state == "cart_management":
+    # SKU 规格选择快速通道：仅当上轮已发出规格询问（pending_sku_product_id 存在）时触发。
+    # 其他 cart_management 下未识别的消息（改数量、删除等）交给 LLM 精确解析。
+    if current_state == "cart_management" and has_pending_sku:
         return _quick_dict("cart_add", {"cart_action": "add"})
 
     return None
