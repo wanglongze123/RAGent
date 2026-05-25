@@ -42,6 +42,19 @@ class ChatRepository(
     /** 商品详情（含 SKU 列表、营销文案、FAQ）— 供底部详情面板使用 */
     suspend fun getProduct(productId: String): Product = apiService.getProduct(productId)
 
+    /** 直接加购（不走 SSE）— 供底部详情面板使用，加完返回最新购物车 */
+    suspend fun addToCartDirect(productId: String, skuId: String, quantity: Int = 1): com.ragent.shopping.data.model.CartResponse {
+        apiService.addToCart(
+            com.ragent.shopping.data.model.AddCartRequest(
+                sessionId = sessionId,
+                productId = productId,
+                skuId = skuId,
+                quantity = quantity,
+            )
+        )
+        return apiService.getCart(sessionId)
+    }
+
     /**
      * 发起对话，返回 Flow<ChatMessage>。
      * text_delta 事件由 ViewModel 负责累积成流式文字气泡，Repository 只负责解析单条事件。

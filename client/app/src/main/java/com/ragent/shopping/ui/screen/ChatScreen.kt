@@ -272,7 +272,9 @@ fun ChatScreen(
         ProductDetailSheet(
             product = product,
             onDismiss = viewModel::closeProductDetail,
-            onAddToCart = { _, _ -> /* Module C 接入 */ },
+            onAddToCart = { pid, skuId ->
+                viewModel.addToCartDirect(pid, skuId, product.title)
+            },
         )
     }
 }

@@ -100,6 +100,40 @@ class ChatViewModel(
         _uiState.update { it.copy(detailProduct = null) }
     }
 
+    /**
+     * Module C: 详情面板里点击"加入购物车"——直接调 REST API，不走 AI/SSE 流。
+     * 流程：
+     *   1) 关闭底部面板（即时反馈）
+     *   2) 调 cart API
+     *   3) 成功 → 更新购物车角标 + toast + 注入引导消息（"接下来？"）
+     *   4) 失败 → 错误 toast
+     */
+    fun addToCartDirect(productId: String, skuId: String, productTitle: String) {
+        // 关闭面板，给即时反馈
+        _uiState.update { it.copy(detailProduct = null) }
+        viewModelScope.launch {
+            try {
+                val cart = chatRepo.addToCartDirect(productId, skuId)
+                _uiState.update { state ->
+                    val confirmation = ChatMessage.AiClarification(
+                        question = "✓ 已将「$productTitle」加入购物车，接下来？",
+                        options = listOf("帮我下单", "查看购物车"),
+                    )
+                    state.copy(
+                        messages = state.messages + confirmation,
+                        cartBadgeCount = cart.totalCount,
+                        cartTotalPrice = cart.totalPrice,
+                        toastMessage = "已加入购物车",
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(toastMessage = "加购失败：${e.message ?: "网络错误"}")
+                }
+            }
+        }
+    }
+
     // ===== 新建会话 =====
 
     fun newSession() {
