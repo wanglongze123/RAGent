@@ -70,7 +70,7 @@ class ApiService(private val gson: Gson = Gson()) {
     suspend fun addToCart(req: AddCartRequest): CartItem = withContext(Dispatchers.IO) {
         val body = gson.toJson(req).toRequestBody(jsonType)
         val request = Request.Builder()
-            .url("$base/api/v1/cart/items")
+            .url("$base/api/v1/cart")
             .post(body)
             .build()
         client.newCall(request).execute().use { response ->
@@ -83,7 +83,7 @@ class ApiService(private val gson: Gson = Gson()) {
         withContext(Dispatchers.IO) {
             val body = gson.toJson(req).toRequestBody(jsonType)
             val request = Request.Builder()
-                .url("$base/api/v1/cart/items/$cartItemId")
+                .url("$base/api/v1/cart/$cartItemId")
                 .put(body)
                 .build()
             client.newCall(request).execute().use { response ->
@@ -94,7 +94,7 @@ class ApiService(private val gson: Gson = Gson()) {
     suspend fun deleteCartItem(cartItemId: String, sessionId: String): Unit =
         withContext(Dispatchers.IO) {
             val request = Request.Builder()
-                .url("$base/api/v1/cart/items/$cartItemId?session_id=$sessionId")
+                .url("$base/api/v1/cart/$cartItemId?session_id=$sessionId")
                 .delete()
                 .build()
             client.newCall(request).execute().use { response ->

@@ -187,7 +187,7 @@ private fun CartItemCard(
             Spacer(Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(item.title, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                if (item.skuProperties.isNotEmpty()) {
+                if (!item.skuProperties.isNullOrEmpty()) {
                     Text(
                         item.skuProperties.values.joinToString(" · "),
                         style = MaterialTheme.typography.bodySmall,

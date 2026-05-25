@@ -82,7 +82,7 @@ data class CartItem(
     @SerializedName("sku_id") val skuId: String,
     @SerializedName("title") val title: String,
     @SerializedName("image_url") val imageUrl: String,
-    @SerializedName("sku_properties") val skuProperties: Map<String, String> = emptyMap(),
+    @SerializedName("sku_props") val skuProperties: Map<String, String>?,
     @SerializedName("unit_price") val unitPrice: Double,
     @SerializedName("quantity") val quantity: Int,
     @SerializedName("subtotal") val subtotal: Double,
