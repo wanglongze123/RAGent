@@ -48,10 +48,11 @@ class SearchAgent:
         top_k = 5
 
         # 相关性阈值：低于阈值的结果直接丢，不凑数发给用户
-        # BGE reranker 输出原始 logit（无上界，~0 是相关/不相关的分界线）
-        # 图搜用余弦相似度（0~1，越高越像）
-        RERANKER_MIN_SCORE = -0.5   # 低于此值说明 BGE 认为基本不相关
-        IMAGE_MIN_SCORE    =  0.45  # 低于此值说明图像向量距离太远
+        # BGE logit 无上界，~0 是分界线；Doubao 降级 reranker 输出 0~1
+        # 通过 reranker.available 判断当前用的哪个，选对应阈值
+        from app.rag.reranker import reranker as _reranker
+        RERANKER_MIN_SCORE = -0.5 if _reranker._bge.available else 0.4
+        IMAGE_MIN_SCORE    =  0.45  # 图搜余弦相似度阈值（0~1）
 
         # ── Step 2-3: 检索（图搜 / 文本检索分两条路）────────
         if image_base64:
