@@ -64,6 +64,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Icon
@@ -98,6 +99,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -739,113 +741,184 @@ private fun ProductDetailSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+        dragHandle = null,   // 自定义视觉，不要默认拖动条
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 16.dp),
-        ) {
-            // 主图
-            AsyncImage(
-                model = NetworkConfig.imageUrl(product.imageUrl),
-                contentDescription = product.title,
+        Column(modifier = Modifier.fillMaxWidth()) {
+
+            // ── Hero 图：全宽满铺，无圆角，底部带柔性渐变 ──
+            Box {
+                AsyncImage(
+                    model = NetworkConfig.imageUrl(product.imageUrl),
+                    contentDescription = product.title,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(300.dp),
+                    contentScale = ContentScale.Crop,
+                )
+                // 顶部一个细拖动条（视觉提示可下滑关闭）
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 12.dp)
+                        .width(36.dp)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(Color.White.copy(alpha = 0.6f))
+                )
+            }
+
+            // ── 内容区，宽边距 ──
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(180.dp)
-                    .clip(RoundedCornerShape(16.dp)),
-                contentScale = ContentScale.Crop,
-            )
+                    .padding(horizontal = 24.dp, vertical = 22.dp),
+            ) {
 
-            Spacer(Modifier.height(12.dp))
-
-            // 品牌 + 商品名
-            Text(
-                product.brand,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.outline,
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                product.title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-            )
-
-            Spacer(Modifier.height(8.dp))
-
-            // 当前匹配 SKU 的价格
-            Text(
-                "¥%.2f".format(matchedSku?.price ?: product.displayPrice),
-                style = MaterialTheme.typography.headlineSmall,
-                color = MaterialTheme.colorScheme.error,
-                fontWeight = FontWeight.Bold,
-            )
-
-            Spacer(Modifier.height(16.dp))
-
-            // SKU 选择器：每个 property 一行 chips
-            propertyKeys.forEach { key ->
-                val values = product.skus.mapNotNull { it.properties[key] }.distinct()
+                // 品牌
                 Text(
-                    key,
-                    style = MaterialTheme.typography.labelMedium,
+                    product.brand,
+                    style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.outline,
+                    letterSpacing = 1.sp,
                 )
+
                 Spacer(Modifier.height(6.dp))
+
+                // 商品名（大字粗体）
+                Text(
+                    product.title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    lineHeight = 28.sp,
+                )
+
+                Spacer(Modifier.height(16.dp))
+
+                // 价格（超大号红字）
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        "¥",
+                        fontSize = 18.sp,
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(bottom = 4.dp),
+                    )
+                    Text(
+                        "%.2f".format(matchedSku?.price ?: product.displayPrice),
+                        fontSize = 32.sp,
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = 36.sp,
+                    )
+                }
+
+                Spacer(Modifier.height(20.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+                Spacer(Modifier.height(18.dp))
+
+                // ── SKU 选择 ──
+                propertyKeys.forEach { key ->
+                    val values = product.skus.mapNotNull { it.properties[key] }.distinct()
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            key,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.width(48.dp),
+                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            values.forEach { v ->
+                                val selected = selectedProps[key] == v
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = { selectedProps = selectedProps + (key to v) },
+                                    label = {
+                                        Text(
+                                            v,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                        )
+                                    },
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                                        selectedLabelColor = MaterialTheme.colorScheme.primary,
+                                    ),
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(14.dp))
+                }
+
+                // ── 商品介绍 ──
+                product.marketingDescription?.takeIf { it.isNotBlank() }?.let { desc ->
+                    Spacer(Modifier.height(4.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+                    Spacer(Modifier.height(18.dp))
+                    Text(
+                        "商品介绍",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        desc,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        lineHeight = 22.sp,
+                        maxLines = 6,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(24.dp))
+                }
+
+                // ── 操作按钮（大尺寸圆角胶囊形）──
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    values.forEach { v ->
-                        val selected = selectedProps[key] == v
-                        FilterChip(
-                            selected = selected,
-                            onClick = { selectedProps = selectedProps + (key to v) },
-                            label = { Text(v, style = MaterialTheme.typography.bodySmall) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                            ),
+                    OutlinedButton(
+                        onClick = {
+                            scope.launch {
+                                sheetState.hide()
+                                onDismiss()
+                            }
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(54.dp),
+                        shape = RoundedCornerShape(27.dp),
+                    ) {
+                        Text(
+                            "继续看看",
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            matchedSku?.let { onAddToCart(product.productId, it.skuId) }
+                        },
+                        modifier = Modifier
+                            .weight(1.4f)
+                            .height(54.dp),
+                        shape = RoundedCornerShape(27.dp),
+                        enabled = matchedSku != null,
+                    ) {
+                        Text(
+                            "加入购物车",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
                         )
                     }
                 }
-                Spacer(Modifier.height(12.dp))
-            }
-
-            // 营销文案（最多 4 行）
-            product.marketingDescription?.takeIf { it.isNotBlank() }?.let { desc ->
-                Text(
-                    desc,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 4,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(Modifier.height(16.dp))
-            }
-
-            // 操作按钮
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                OutlinedButton(
-                    onClick = {
-                        scope.launch {
-                            sheetState.hide()
-                            onDismiss()
-                        }
-                    },
-                    modifier = Modifier.weight(1f),
-                ) { Text("继续看看") }
-
-                Button(
-                    onClick = {
-                        matchedSku?.let { onAddToCart(product.productId, it.skuId) }
-                    },
-                    modifier = Modifier.weight(1.2f),
-                    enabled = matchedSku != null,
-                ) { Text("加入购物车") }
             }
         }
     }
