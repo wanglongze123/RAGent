@@ -233,6 +233,11 @@ class MasterAgent:
         if quick is not None:
             return quick
 
+        # cart_management：意图已明确（就是购物车操作），跳过 master LLM
+        # cart_agent 自带专项 LLM，context 更小、更快
+        if current_state == "cart_management":
+            return _quick_dict("cart_manage", {"cart_action": "interpret", "query": message})
+
         # 走 LLM 慢路径
         context_messages = [
             {"role": m["role"], "content": m["content"]}

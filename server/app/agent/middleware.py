@@ -27,6 +27,7 @@ AGENT_TOOLS: dict[str, list[dict]] = {
     "master":  [],   # Master Agent 只做分类，不调工具
     "search":  [],   # Search Agent 依赖 RAG，不需要 function calling
     "compare": [],   # Compare Agent 同上
+    "cart_interpret": [],   # Cart 快速解析：context 只含购物车，不需要工具
     "cart":    [     # Cart Agent 需要操作购物车
         {
             "type": "function",
@@ -84,6 +85,7 @@ AGENT_PROMPTS: dict[str, str] = {
     "search_judge":   search.SEARCH_JUDGE_PROMPT,
     "compare":        compare.COMPARE_AGENT_PROMPT,
     "cart":           cart.CART_AGENT_PROMPT,
+    "cart_interpret": cart.CART_INTERPRET_PROMPT,
     "order":          order.ORDER_AGENT_PROMPT,
     # scene 复用同一 agent 名走两条不同提示词：规划阶段用 JSON Mode，生成阶段流式
     "scene_planning":    scene.SCENE_PLANNING_PROMPT,

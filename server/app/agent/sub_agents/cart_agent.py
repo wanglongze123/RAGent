@@ -48,6 +48,9 @@ class CartAgent:
         elif action == "clear":
             async for e in self._handle_clear(session_id):
                 yield e
+        elif action == "interpret":
+            async for e in self._handle_interpret(session_id, message, params):
+                yield e
         else:
             yield ev.text_delta("请告诉我您想对购物车做什么操作？").to_sse()
 
@@ -286,6 +289,105 @@ class CartAgent:
             )
         lines.append(f"\n合计：¥{cart['total_price']}")
         yield ev.text_delta("\n".join(lines)).to_sse()
+
+    async def _handle_interpret(
+        self,
+        session_id: str,
+        message: str,
+        params: dict,
+    ) -> AsyncIterator[str]:
+        """
+        cart_management 快速通道：跳过 master LLM，用专项 cart_interpret LLM
+        一次调用完成"解析操作 + 生成回复"，比走 master LLM 快 3-5 倍。
+        """
+        import json as _json
+
+        cart = await db.cart_get(session_id)
+        items = cart.get("items", [])
+
+        if not items:
+            yield ev.text_delta("您的购物车是空的，快去挑选心仪的商品吧～").to_sse()
+            return
+
+        # 构建购物车上下文（含序号供 LLM 指代）
+        lines = []
+        for i, item in enumerate(items, 1):
+            props = "/".join(str(v) for v in item["sku_props"].values()) if item["sku_props"] else ""
+            lines.append(
+                f"#{i} {item['title']}" + (f"（{props}）" if props else "")
+                + f" × {item['quantity']} 件"
+            )
+        cart_context = "\n".join(lines)
+
+        # 单次专项 LLM 调用：解析操作 + 生成回复
+        raw = await middleware.chat(
+            agent_name="cart_interpret",
+            user_messages=[{"role": "user", "content": message}],
+            prompt_vars={"cart_context": cart_context},
+            json_mode=True,
+            temperature=0.0,
+        )
+
+        try:
+            result = _json.loads(raw)
+        except Exception:
+            yield ev.text_delta("抱歉没理解，请告诉我您想对购物车做什么？").to_sse()
+            return
+
+        action     = result.get("action", "unknown")
+        item_index = int(result.get("item_index") or 0)
+        quantity   = result.get("quantity")
+        reply      = result.get("reply", "")
+
+        # 校验序号，映射到实际购物车条目
+        target = items[item_index - 1] if 1 <= item_index <= len(items) else None
+
+        if action == "update_quantity" and target and quantity is not None:
+            qty = int(quantity)
+            if qty <= 0:
+                success = await db.cart_remove(session_id, target["cart_item_id"])
+                if success:
+                    updated_cart = await db.cart_get(session_id)
+                    yield ev.cart_update(
+                        action="remove",
+                        product_id=target["product_id"], sku_id=target["sku_id"],
+                        title=target["title"], quantity=0,
+                        cart_total_count=updated_cart["total_count"],
+                        cart_total_price=updated_cart["total_price"],
+                        message="商品已从购物车移除",
+                    ).to_sse()
+            else:
+                updated = await db.cart_update_quantity(session_id, target["cart_item_id"], qty)
+                if updated:
+                    updated_cart = await db.cart_get(session_id)
+                    yield ev.cart_update(
+                        action="update_quantity",
+                        product_id=updated["product_id"], sku_id=updated["sku_id"],
+                        title=updated["title"], quantity=qty,
+                        cart_total_count=updated_cart["total_count"],
+                        cart_total_price=updated_cart["total_price"],
+                        message=f"已将数量改为 {qty} 件",
+                    ).to_sse()
+
+        elif action == "remove" and target:
+            success = await db.cart_remove(session_id, target["cart_item_id"])
+            if success:
+                updated_cart = await db.cart_get(session_id)
+                yield ev.cart_update(
+                    action="remove",
+                    product_id=target["product_id"], sku_id=target["sku_id"],
+                    title=target["title"], quantity=0,
+                    cart_total_count=updated_cart["total_count"],
+                    cart_total_price=updated_cart["total_price"],
+                    message="已从购物车移除",
+                ).to_sse()
+
+        elif action == "view":
+            async for e in self._handle_view(session_id):
+                yield e
+            return
+
+        yield ev.text_delta(reply if reply else "操作已完成。").to_sse()
 
     async def _handle_clear(self, session_id: str) -> AsyncIterator[str]:
         """清空购物车"""
