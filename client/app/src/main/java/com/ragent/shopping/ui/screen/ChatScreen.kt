@@ -227,7 +227,7 @@ fun ChatScreen(
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                contentPadding = PaddingValues(vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(uiState.messages) { message ->
@@ -378,16 +378,22 @@ private fun MessageItem(
     onProductClick: (String) -> Unit,
     onOptionSelected: (String) -> Unit,
 ) {
-    when (message) {
-        is ChatMessage.User -> UserBubble(message.text, message.bitmap)
-        is ChatMessage.AiText -> AiTextBubble(message.text, message.isStreaming)
-        is ChatMessage.AiStatus -> StatusBubble(message.message)
-        is ChatMessage.AiProductCard -> ProductCardMessage(message.product, onProductClick)
-        is ChatMessage.AiProductList -> ProductCarousel(message.products, onProductClick, onOptionSelected)
-        is ChatMessage.AiComparison -> ComparisonMessage(message.table, onProductClick)
-        is ChatMessage.AiClarification -> ClarificationMessage(message.question, message.options, onOptionSelected)
-        is ChatMessage.AiError -> ErrorBubble(message.message)
-        else -> Unit
+    // AiProductList 需要全宽（自带内边距），其他消息统一加 12dp 水平 padding
+    val mod = if (message is ChatMessage.AiProductList) Modifier
+    else Modifier.padding(horizontal = 12.dp)
+
+    Box(modifier = mod) {
+        when (message) {
+            is ChatMessage.User -> UserBubble(message.text, message.bitmap)
+            is ChatMessage.AiText -> AiTextBubble(message.text, message.isStreaming)
+            is ChatMessage.AiStatus -> StatusBubble(message.message)
+            is ChatMessage.AiProductCard -> ProductCardMessage(message.product, onProductClick)
+            is ChatMessage.AiProductList -> ProductCarousel(message.products, onProductClick, onOptionSelected)
+            is ChatMessage.AiComparison -> ComparisonMessage(message.table, onProductClick)
+            is ChatMessage.AiClarification -> ClarificationMessage(message.question, message.options, onOptionSelected)
+            is ChatMessage.AiError -> ErrorBubble(message.message)
+            else -> Unit
+        }
     }
 }
 
@@ -529,10 +535,7 @@ private fun ProductCarousel(
     Column(modifier = Modifier.fillMaxWidth()) {
         HorizontalPager(
             state = pagerState,
-            // 负外边距抵消 LazyColumn 的 12dp horizontal padding，让卡片铺满屏幕宽度
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = (-12).dp),
+            modifier = Modifier.fillMaxWidth(),
             contentPadding = PaddingValues(horizontal = 16.dp),
             pageSpacing = 12.dp,
         ) { page ->
