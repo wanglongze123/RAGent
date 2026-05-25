@@ -75,10 +75,13 @@ INTENT_CLASSIFICATION_PROMPT = """你是一个电商导购 AI 的意图分析模
 
 示例：
 - "500以内" + 上文是跑鞋 → query="跑鞋", price_max=500
+- "20元以内"（仅价格，无商品名）+ last_shown_products 含 sub_category="方便面" → query="方便面", price_max=20
 - "要轻量的" + 上文是跑鞋，price_max=500 还在 → query="轻量跑鞋", price_max=500
 - "不要耐克" + 上文是跑鞋 → query="跑鞋", exclude_brands=["耐克","Nike"]
 - "要蒙牛品牌" + 上文是纯牛奶，price_max=100 还在 → query="纯牛奶", include_brands=["蒙牛"], price_max=100
 - "有没有红色的" + 上文是连衣裙 → query="红色连衣裙"
+
+**禁止**：不要把 query 设为"图片相似款"/"图片同款"等占位词，必须从 last_shown_products 的 sub_category 或 title 提取真实商品类目。
 
 ## 注意事项
 

@@ -227,6 +227,13 @@ class SearchAgent:
         order_info: dict,
     ) -> AsyncIterator[str]:
 
+        # 文字细化时，若 LLM 没能从图片上下文提取到真实商品名（产生"图片相似款"等占位词），
+        # 用已保存的 last_search_query 替换，确保检索有意义
+        if not image_base64 and (not query or "图片" in query):
+            fallback = order_info.get("last_search_query", "")
+            if fallback:
+                query = fallback
+
         where   = _build_price_filter(price_max, price_min)
         fetch_k = 10
 
