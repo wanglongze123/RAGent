@@ -73,9 +73,39 @@ class SearchAgent:
             # 图搜场景下走 brand 硬过滤；attr 过滤需要 chunk 文本，跳过
             if excl_brands:
                 ranked = _filter_brands(ranked, excl_brands)
-            # 余弦相似度过滤：保留相似度足够高的，至少保留 1 个兜底
+            # 余弦相似度过滤：过滤视觉上差异过大的结果
             filtered = [r for r in ranked if r["score"] >= IMAGE_MIN_SCORE]
             ranked = filtered if filtered else ranked[:1]
+
+            # 用户同时提供了文字（如"我就想要元气森林"）→ 用文字对图搜结果做二次精排
+            # 纯图搜无法区分同类目商品（饮料都长得像），文字能精确锁定品牌/型号
+            if query and len(ranked) > 1:
+                from app.rag.retriever import RetrievedChunk
+                from app.rag.reranker import reranker as _reranker
+                text_chunks = [
+                    RetrievedChunk(
+                        chunk_id=r["product_id"],
+                        product_id=r["product_id"],
+                        chunk_type="product_repr",
+                        content=(
+                            f"{r['metadata'].get('title', '')} "
+                            f"{r['metadata'].get('brand', '')} "
+                            f"{r['metadata'].get('sub_category', '')}"
+                        ),
+                        score=r["score"],
+                        metadata=r["metadata"],
+                    )
+                    for r in ranked
+                ]
+                reranked = await _reranker.rerank(query, text_chunks, top_k=len(text_chunks))
+                # 过滤掉 BGE 认为不相关的（负分）
+                relevant = [c for c in reranked if c.score >= RERANKER_MIN_SCORE]
+                if relevant:
+                    pid_order = [c.product_id for c in relevant]
+                    ranked = sorted(
+                        [r for r in ranked if r["product_id"] in pid_order],
+                        key=lambda r: pid_order.index(r["product_id"]),
+                    )
         else:
             yield ev.tool_progress("hybrid_search", "正在为您检索相关商品...").to_sse()
             fetch_k = top_k * 2   # 多取，reranker 过滤后再截断
