@@ -196,11 +196,15 @@ async def _llm_judge(
     从候选商品中选出最符合需求的 product_id 列表（最多3个）。
     失败时降级返回前3个。
 
-    is_image_search=True 时，candidates 已按视觉相似度降序排列，
-    裁判内容会明确告知排名含义，让裁判优先选排名靠前的。
+    is_image_search=True 且 text_constraint=None 时直接取视觉 top-2，
+    不调 LLM——裁判看不到图片，让它判视觉排名毫无意义且慢。
     """
     if not candidates:
         return []
+
+    # 纯图片 / 图片+指代词：视觉检索已排好序，跳过裁判直接取前2
+    if is_image_search and text_constraint is None:
+        return [r["product_id"] for r in candidates[:2]]
 
     # 加入序号，让裁判感知排名
     lines = [
