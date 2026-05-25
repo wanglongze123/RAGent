@@ -80,17 +80,25 @@ class SearchAgent:
             return
 
         # ── Step 4: LLM 裁判 ────────────────────────────────
-        # 三种情况统一走裁判，裁判决定发哪些卡片：
-        #   纯文字   → query 即用户诉求，裁判直接判相关性
-        #   纯图片   → query 为空，裁判依据图搜排名+商品描述选最一致的
-        #   图片+文字 → query 即用户补充说明，裁判用文字精确过滤
-        if image_base64 and not query:
-            judge_query = "（用户上传了图片，以下是视觉相似的候选商品，请选出品类和风格最一致的）"
+        # 图搜候选已按视觉相似度降序排列，裁判必须知道这个排名含义才能正确取舍。
+        # 四种情况：
+        #   纯文字         → text_constraint=query，裁判按文字相关性判
+        #   纯图片         → text_constraint=None，裁判按视觉排名取前排
+        #   图片+指代词     → "这款/这个"指向图片本身，不提供新筛选信息
+        #                    → text_constraint=None，等同纯图片
+        #   图片+明确文字   → "只要农夫山泉"等具体约束 → text_constraint=query
+        if image_base64:
+            if not query or any(w in query for w in _IMAGE_REF_WORDS):
+                text_constraint = None        # 无实质文字约束
+            else:
+                text_constraint = query       # 有品牌/商品名等具体约束
         else:
-            judge_query = query
+            text_constraint = query
 
         yield ev.tool_progress("llm_judge", "正在筛选最匹配的商品…").to_sse()
-        selected_ids = await _llm_judge(judge_query, ranked)
+        selected_ids = await _llm_judge(
+            text_constraint, ranked, is_image_search=bool(image_base64)
+        )
 
         # 按裁判顺序重排；若裁判返回空则降级取前3
         if selected_ids:
@@ -167,31 +175,52 @@ class SearchAgent:
             yield ev.text_delta(token).to_sse()
 
 
+# 图片指代词：用户文字只是指向图片，不携带额外筛选信息
+_IMAGE_REF_WORDS = {
+    "这款", "这个", "这件", "这条", "这双", "这瓶", "这盒", "这套",
+    "那款", "那个", "那件", "那条", "那双", "那瓶", "那盒", "那套",
+    "这种", "这类", "这样的",
+}
+
+
 # ─────────────────────────────────────────────────────────
 # LLM 裁判
 # ─────────────────────────────────────────────────────────
 
-async def _llm_judge(judge_query: str, candidates: list[dict]) -> list[str]:
+async def _llm_judge(
+    text_constraint: str | None,
+    candidates: list[dict],
+    is_image_search: bool = False,
+) -> list[str]:
     """
-    从候选商品中选出真正符合 query 的 product_id 列表（最多3个）。
+    从候选商品中选出最符合需求的 product_id 列表（最多3个）。
     失败时降级返回前3个。
+
+    is_image_search=True 时，candidates 已按视觉相似度降序排列，
+    裁判内容会明确告知排名含义，让裁判优先选排名靠前的。
     """
     if not candidates:
         return []
 
+    # 加入序号，让裁判感知排名
     lines = [
-        f"- id={r['product_id']} 《{r['metadata'].get('title', '')}》 "
+        f"- [#{i + 1}] id={r['product_id']} 《{r['metadata'].get('title', '')}》 "
         f"品牌:{r['metadata'].get('brand', '')} 类目:{r['metadata'].get('sub_category', '')}"
-        for r in candidates
+        for i, r in enumerate(candidates)
     ]
+
+    if is_image_search:
+        header = "候选商品（按视觉相似度排序，#1 最匹配图片中的商品，请优先选排名靠前的）："
+        if text_constraint:
+            header += f"\n用户额外指定：{text_constraint}（可进一步筛选品牌/类型，但不能忽视视觉排名）"
+        content = header + "\n" + "\n".join(lines)
+    else:
+        content = f"用户需求：{text_constraint}\n\n候选商品：\n" + "\n".join(lines)
 
     try:
         raw = await middleware.chat(
             agent_name="search_judge",
-            user_messages=[{
-                "role": "user",
-                "content": f"用户需求：{judge_query}\n\n候选商品：\n" + "\n".join(lines),
-            }],
+            user_messages=[{"role": "user", "content": content}],
             json_mode=True,
             temperature=0.0,
         )
