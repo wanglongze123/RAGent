@@ -54,10 +54,10 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -82,6 +82,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -109,11 +110,16 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
-    // 自动滚动到最新消息
+    // 自动滚动：新消息 → 平滑动画；流式 token 追加 → 即时滚动（避免动画堆积卡顿）
     LaunchedEffect(uiState.messages.size) {
-        if (uiState.messages.isNotEmpty()) {
+        if (uiState.messages.isNotEmpty())
             listState.animateScrollToItem(uiState.messages.size - 1)
-        }
+    }
+    val lastStreamingText = (uiState.messages.lastOrNull() as? ChatMessage.AiText)
+        ?.takeIf { it.isStreaming }?.text
+    LaunchedEffect(lastStreamingText) {
+        if (!lastStreamingText.isNullOrEmpty())
+            listState.scrollToItem(uiState.messages.size - 1)
     }
 
     // 购物车操作 toast
@@ -572,14 +578,21 @@ private fun ComparisonMessage(table: ComparisonTable, onProductClick: (String) -
 private fun ClarificationMessage(question: String, options: List<String>, onSelected: (String) -> Unit) {
     Column {
         AiTextBubble(question, isStreaming = false)
-        Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        Spacer(Modifier.height(8.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             options.forEach { option ->
-                FilterChip(
-                    selected = false,
+                OutlinedButton(
                     onClick = { onSelected(option) },
-                    label = { Text(option, style = MaterialTheme.typography.bodySmall) },
-                )
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                ) {
+                    Text(
+                        option,
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center,
+                    )
+                }
             }
         }
     }

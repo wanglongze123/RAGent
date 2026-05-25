@@ -60,7 +60,15 @@ class ChatViewModel(
 
     // ===== 点击反问选项 =====
 
-    fun selectClarification(option: String) = sendMessage(option)
+    fun selectClarification(option: String) {
+        // 移除最后一条 clarification，避免选完后留着占空白
+        _uiState.update { state ->
+            val idx = state.messages.indexOfLast { it is ChatMessage.AiClarification }
+            if (idx >= 0) state.copy(messages = state.messages.toMutableList().apply { removeAt(idx) })
+            else state
+        }
+        sendMessage(option)
+    }
 
     // 旧接口兼容（供外部直接传 base64，不带 bitmap 预览）
     fun searchByImageBase64(base64: String) = sendMessage("", base64, null)
