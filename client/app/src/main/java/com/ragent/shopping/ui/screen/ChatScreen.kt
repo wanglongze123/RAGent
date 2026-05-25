@@ -122,9 +122,9 @@ fun ChatScreen(
             listState.scrollToItem(uiState.messages.size - 1)
     }
 
-    // 购物车操作 toast
-    LaunchedEffect(uiState.toastMessage) {
-        if (uiState.toastMessage.isNotEmpty()) {
+    // 购物车操作 toast — 等流式响应结束后再弹，避免和转圈 loading 同时出现
+    LaunchedEffect(uiState.toastMessage, uiState.isLoading) {
+        if (uiState.toastMessage.isNotEmpty() && !uiState.isLoading) {
             snackbarHostState.showSnackbar(uiState.toastMessage)
             viewModel.clearToast()
         }
