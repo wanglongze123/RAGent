@@ -228,11 +228,18 @@ class SearchAgent:
     ) -> AsyncIterator[str]:
 
         # 文字细化时，若 LLM 没能从图片上下文提取到真实商品名（产生"图片相似款"等占位词），
-        # 用已保存的 last_search_query 替换，确保检索有意义
+        # 直接用服务端保存的上下文替换，绕过 LLM 推断：
+        #   1. query 回填为 last_search_query（sub_category）
+        #   2. include_brands 注入 last_search_brands（图片搜索时的品牌）
         if not image_base64 and (not query or "图片" in query):
-            fallback = order_info.get("last_search_query", "")
-            if fallback:
-                query = fallback
+            fallback_query = order_info.get("last_search_query", "")
+            if fallback_query:
+                query = fallback_query
+        # 图片搜索的品牌上下文：如果本次没有指定品牌过滤，且上次是图片搜索，自动沿用品牌
+        if not image_base64 and not incl_brands:
+            saved_brands = order_info.get("last_search_brands", [])
+            if saved_brands:
+                incl_brands = saved_brands
 
         where   = _build_price_filter(price_max, price_min)
         fetch_k = 10
@@ -294,14 +301,20 @@ class SearchAgent:
             yield ev.text_delta("抱歉，商品信息暂时无法获取。").to_sse()
             return
 
-        # 保存本次搜索上下文，供后续细化时 LLM 合并
-        # 图片搜索 query 为空时，用第一款展示商品的类目作为上下文（避免细化时无从合并）
+        # 保存本次搜索上下文，供后续细化时复用（绕过 LLM 重推断）
         context_to_save = query if query else (
             shown_products[0].sub_category if shown_products else ""
         )
         if context_to_save:
             order_info["last_search_query"] = context_to_save
-            await db.update_order_state(session_id, order_info)
+        # 图片搜索时额外保存品牌列表（LLM 看不到图片，细化时无法自动恢复品牌）
+        if image_base64 and shown_products:
+            unique_brands = list(dict.fromkeys(p.brand for p in shown_products))
+            order_info["last_search_brands"] = unique_brands
+        elif not image_base64:
+            # 文字搜索时清除旧的图片品牌缓存，避免错误继承
+            order_info.pop("last_search_brands", None)
+        await db.update_order_state(session_id, order_info)
 
         intro = "根据您上传的图片，为您找到以下相似款：" if image_base64 else "根据您的需求，为您推荐以下商品："
         yield ev.text_delta(intro).to_sse()
