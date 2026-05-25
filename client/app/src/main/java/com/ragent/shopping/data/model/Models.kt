@@ -1,5 +1,6 @@
 package com.ragent.shopping.data.model
 
+import android.graphics.Bitmap
 import com.google.gson.annotations.SerializedName
 
 // ===== SSE 事件类型（对应接口文档第6节）=====
@@ -131,8 +132,8 @@ data class UpdateCartRequest(
 // ===== UI 消息模型（LazyColumn 中展示的每一条） =====
 
 sealed class ChatMessage {
-    // 用户发送的文字
-    data class User(val text: String) : ChatMessage()
+    // 用户发送的文字（bitmap 非 null 时对话框显示图片）
+    data class User(val text: String, val bitmap: Bitmap? = null) : ChatMessage()
 
     // AI 流式文字，isStreaming=true 时末尾显示光标
     data class AiText(val text: String, val isStreaming: Boolean = false) : ChatMessage()

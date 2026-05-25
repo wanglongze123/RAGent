@@ -40,40 +40,30 @@ class ChatViewModel(
         }
     }
 
-    // ===== 发送文字消息 =====
+    // ===== 发送消息（文字 / 图片 / 图文混合）=====
 
-    fun sendMessage(text: String) {
-        if (text.isBlank() || _uiState.value.isLoading) return
+    fun sendMessage(text: String, imageBase64: String? = null, bitmap: Bitmap? = null) {
+        if (text.isBlank() && imageBase64 == null) return
+        if (_uiState.value.isLoading) return
         viewModelScope.launch {
             chatRepo.ensureSession()
-            appendUserMessage(text)
-            streamFromRepo { chatRepo.chat(text) }
+            _uiState.update { state ->
+                state.copy(
+                    messages = state.messages + ChatMessage.User(text, bitmap),
+                    isLoading = true,
+                )
+            }
+            addStatus("正在思考...")
+            streamFromRepo { chatRepo.chat(text, imageBase64) }
         }
     }
 
-    // ===== 拍照找货 =====
-
-    fun searchByImagePath(imagePath: String) {
-        viewModelScope.launch {
-            chatRepo.ensureSession()
-            appendUserMessage("[拍照找货]")
-            val base64 = compressToBase64(imagePath) ?: return@launch
-            streamFromRepo { chatRepo.searchByImage(base64) }
-        }
-    }
-
-    fun searchByImageBase64(base64: String) {
-        if (base64.isBlank() || _uiState.value.isLoading) return
-        viewModelScope.launch {
-            chatRepo.ensureSession()
-            appendUserMessage("[拍照找货]")
-            streamFromRepo { chatRepo.searchByImage(base64) }
-        }
-    }
-
-    // ===== 点击反问选项：等同于发送该文字 =====
+    // ===== 点击反问选项 =====
 
     fun selectClarification(option: String) = sendMessage(option)
+
+    // 旧接口兼容（供外部直接传 base64，不带 bitmap 预览）
+    fun searchByImageBase64(base64: String) = sendMessage("", base64, null)
 
     // ===== 新建会话 =====
 
@@ -91,16 +81,6 @@ class ChatViewModel(
     fun clearToast() = _uiState.update { it.copy(toastMessage = "") }
 
     // ===== 内部辅助 =====
-
-    private fun appendUserMessage(text: String) {
-        _uiState.update { state ->
-            state.copy(
-                messages = state.messages + ChatMessage.User(text),
-                isLoading = true,
-            )
-        }
-        addStatus("正在思考...")
-    }
 
     private fun addStatus(msg: String) {
         _uiState.update { state ->

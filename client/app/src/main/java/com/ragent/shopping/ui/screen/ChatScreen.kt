@@ -7,6 +7,8 @@ import android.net.Uri
 import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
+import java.io.File
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -43,6 +45,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddShoppingCart
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -73,6 +77,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -119,27 +124,40 @@ fun ChatScreen(
         }
     }
 
-    // 图片选择器
-    var pendingImageUri by remember { mutableStateOf<Uri?>(null) }
+    // pending 图片状态：选好图后先放在输入栏，等用户点发送
+    var pendingImageBase64 by remember { mutableStateOf<String?>(null) }
+    var pendingBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+
+    fun setPendingImage(base64: String, bitmap: android.graphics.Bitmap) {
+        pendingImageBase64 = base64
+        pendingBitmap = bitmap
+    }
+
+    // 相册选择器
     val imagePickerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
     ) { uri ->
         uri?.let {
             scope.launch {
-                val base64 = uriToBase64(context, it)
-                if (base64 != null) viewModel.searchByImageBase64(base64)
+                val bitmap = uriToBitmap(context, it) ?: return@launch
+                val base64 = bitmapToBase64(bitmap)
+                setPendingImage(base64, bitmap)
             }
         }
     }
 
-    // 拍照 launcher
+    // 拍照：用 TakePicture + FileProvider
+    var cameraImageUri by remember { mutableStateOf<Uri?>(null) }
     val cameraLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.TakePicturePreview()
-    ) { bitmap ->
-        bitmap?.let {
-            scope.launch {
-                val base64 = bitmapToBase64(it)
-                viewModel.searchByImageBase64(base64)
+        ActivityResultContracts.TakePicture()
+    ) { success ->
+        if (success) {
+            cameraImageUri?.let { uri ->
+                scope.launch {
+                    val bitmap = uriToBitmap(context, uri) ?: return@launch
+                    val base64 = bitmapToBase64(bitmap)
+                    setPendingImage(base64, bitmap)
+                }
             }
         }
     }
@@ -147,8 +165,11 @@ fun ChatScreen(
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) cameraLauncher.launch(null)
-        else imagePickerLauncher.launch("image/*")
+        if (granted) {
+            val uri = createCameraUri(context)
+            cameraImageUri = uri
+            cameraLauncher.launch(uri)
+        }
     }
 
     Scaffold(
@@ -200,14 +221,29 @@ fun ChatScreen(
             // 输入栏
             ChatInputBar(
                 isLoading = uiState.isLoading,
-                onSend = viewModel::sendMessage,
+                pendingBitmap = pendingBitmap,
+                onSend = { text ->
+                    viewModel.sendMessage(text, pendingImageBase64, pendingBitmap)
+                    pendingImageBase64 = null
+                    pendingBitmap = null
+                },
+                onClearImage = {
+                    pendingImageBase64 = null
+                    pendingBitmap = null
+                },
                 onCameraClick = {
                     val hasPerm = ContextCompat.checkSelfPermission(
                         context, Manifest.permission.CAMERA
                     ) == PackageManager.PERMISSION_GRANTED
-                    if (hasPerm) cameraLauncher.launch(null)
-                    else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                    if (hasPerm) {
+                        val uri = createCameraUri(context)
+                        cameraImageUri = uri
+                        cameraLauncher.launch(uri)
+                    } else {
+                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                    }
                 },
+                onGalleryClick = { imagePickerLauncher.launch("image/*") },
             )
         }
     }
@@ -216,21 +252,58 @@ fun ChatScreen(
 @Composable
 private fun ChatInputBar(
     isLoading: Boolean,
+    pendingBitmap: android.graphics.Bitmap?,
     onSend: (String) -> Unit,
+    onClearImage: () -> Unit,
     onCameraClick: () -> Unit,
+    onGalleryClick: () -> Unit,
 ) {
     var inputText by remember { mutableStateOf("") }
+    val canSend = (inputText.isNotBlank() || pendingBitmap != null) && !isLoading
 
     Surface(shadowElevation = 8.dp) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onCameraClick) {
-                Icon(Icons.Default.CameraAlt, contentDescription = "拍照找货", tint = MaterialTheme.colorScheme.primary)
+        Column {
+            // 图片预览行（有 pending 图片时显示）
+            if (pendingBitmap != null) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box {
+                        androidx.compose.foundation.Image(
+                            bitmap = pendingBitmap.asImageBitmap(),
+                            contentDescription = "待发送图片",
+                            modifier = Modifier
+                                .size(64.dp)
+                                .clip(RoundedCornerShape(8.dp)),
+                            contentScale = ContentScale.Crop,
+                        )
+                        IconButton(
+                            onClick = onClearImage,
+                            modifier = Modifier
+                                .size(20.dp)
+                                .align(Alignment.TopEnd)
+                                .background(MaterialTheme.colorScheme.surface, CircleShape),
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "移除图片", modifier = Modifier.size(12.dp))
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text("图片已选择，可输入文字后发送", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                }
             }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onCameraClick, enabled = !isLoading) {
+                    Icon(Icons.Default.CameraAlt, contentDescription = "拍照找货", tint = MaterialTheme.colorScheme.primary)
+                }
+                IconButton(onClick = onGalleryClick, enabled = !isLoading) {
+                    Icon(Icons.Default.Image, contentDescription = "从相册选图", tint = MaterialTheme.colorScheme.primary)
+                }
             OutlinedTextField(
                 value = inputText,
                 onValueChange = { inputText = it },
@@ -240,7 +313,7 @@ private fun ChatInputBar(
                 shape = RoundedCornerShape(24.dp),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                 keyboardActions = KeyboardActions(onSend = {
-                    if (inputText.isNotBlank() && !isLoading) {
+                    if (canSend) {
                         onSend(inputText.trim())
                         inputText = ""
                     }
@@ -249,18 +322,19 @@ private fun ChatInputBar(
             Spacer(Modifier.width(4.dp))
             IconButton(
                 onClick = {
-                    if (inputText.isNotBlank() && !isLoading) {
+                    if (canSend) {
                         onSend(inputText.trim())
                         inputText = ""
                     }
                 },
-                enabled = inputText.isNotBlank() && !isLoading,
+                enabled = canSend,
             ) {
                 if (isLoading) {
                     CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                 } else {
                     Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送", tint = MaterialTheme.colorScheme.primary)
                 }
+            }
             }
         }
     }
@@ -273,7 +347,7 @@ private fun MessageItem(
     onOptionSelected: (String) -> Unit,
 ) {
     when (message) {
-        is ChatMessage.User -> UserBubble(message.text)
+        is ChatMessage.User -> UserBubble(message.text, message.bitmap)
         is ChatMessage.AiText -> AiTextBubble(message.text, message.isStreaming)
         is ChatMessage.AiStatus -> StatusBubble(message.message)
         is ChatMessage.AiProductCard -> ProductCardMessage(message.product, onProductClick)
@@ -286,19 +360,34 @@ private fun MessageItem(
 }
 
 @Composable
-private fun UserBubble(text: String) {
+private fun UserBubble(text: String, bitmap: android.graphics.Bitmap? = null) {
     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
-        Surface(
-            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 4.dp, bottomStart = 16.dp, bottomEnd = 16.dp),
-            color = MaterialTheme.colorScheme.primary,
-        ) {
-            Text(
-                text = text,
-                modifier = Modifier
-                    .widthIn(max = 280.dp)
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                color = MaterialTheme.colorScheme.onPrimary,
-            )
+        Column(horizontalAlignment = Alignment.End) {
+            if (bitmap != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = "图片",
+                    modifier = Modifier
+                        .size(200.dp)
+                        .clip(RoundedCornerShape(12.dp)),
+                    contentScale = ContentScale.Crop,
+                )
+                if (text.isNotBlank()) Spacer(Modifier.height(4.dp))
+            }
+            if (text.isNotBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(topStart = 16.dp, topEnd = 4.dp, bottomStart = 16.dp, bottomEnd = 16.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                ) {
+                    Text(
+                        text = text,
+                        modifier = Modifier
+                            .widthIn(max = 280.dp)
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
+                }
+            }
         }
     }
 }
@@ -508,6 +597,16 @@ private fun bitmapToBase64(bitmap: Bitmap): String {
     return Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
 }
 
+private fun uriToBitmap(context: android.content.Context, uri: Uri): Bitmap? {
+    return try {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            android.graphics.BitmapFactory.decodeStream(input)
+        }
+    } catch (e: Exception) {
+        null
+    }
+}
+
 private fun uriToBase64(context: android.content.Context, uri: Uri): String? {
     return try {
         context.contentResolver.openInputStream(uri)?.use { input ->
@@ -517,4 +616,10 @@ private fun uriToBase64(context: android.content.Context, uri: Uri): String? {
     } catch (e: Exception) {
         null
     }
+}
+
+private fun createCameraUri(context: android.content.Context): Uri {
+    val dir = File(context.cacheDir, "camera").also { it.mkdirs() }
+    val file = File.createTempFile("photo_", ".jpg", dir)
+    return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
 }
