@@ -516,6 +516,11 @@ def _quick_classify(message: str, current_state: str, has_pending_sku: bool = Fa
         # _enrich_filters_from_message 会抽品牌/属性排除。LLM 的活规则替了
         return _quick_dict("search", {"query": msg})
 
+    # 用户否定了当前搜索结果（"都不是，换个方式找"）→ 快速走 search，
+    # search_agent 内部检测"都不是"后直接输出精化引导，不做检索
+    if "都不是" in msg:
+        return _quick_dict("search", {"query": msg})
+
     # SKU 规格选择快速通道：仅当上轮已发出规格询问（pending_sku_product_id 存在）时触发。
     # 其他 cart_management 下未识别的消息（改数量、删除等）交给 LLM 精确解析。
     if current_state == "cart_management" and has_pending_sku:

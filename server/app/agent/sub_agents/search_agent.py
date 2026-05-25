@@ -3,11 +3,12 @@ Search Agent — 商品搜索与推荐。
 
 流程：
   Step 1: 解析结构化参数（价格区间、品牌排除、属性排除）
+          特殊：query 含"都不是"时直接输出精化引导，不做检索
   Step 2: 检索候选（图搜 / 文本检索）
   Step 3: 硬过滤（品牌排除、属性排除）
   Step 4: LLM 裁判 — 从候选中选出真正相关的 product_id（最多3个）
-  Step 5: 推商品卡片（只推裁判选中的）
-  Step 6: 流式生成推荐理由（与卡片完全同步）
+  Step 5: 推商品卡片
+  Step 6: 一句话引导 + 商品选择框（用户点击后进入 product_inquiry 查看详情）
 """
 import json as _json
 from typing import AsyncIterator
@@ -35,6 +36,17 @@ class SearchAgent:
         price_min   = params.get("price_min")
         excl_brands = params.get("exclude_brands", [])
         excl_attrs  = params.get("exclude_attrs", [])
+
+        # 用户否定了当前搜索结果，引导重新描述需求（不做检索）
+        if "都不是" in query:
+            yield ev.text_delta(
+                "好的！请告诉我您更具体的需求，例如：\n"
+                "· 品牌偏好（想要/不想要哪些品牌）\n"
+                "· 价格范围\n"
+                "· 特定功能或用途\n\n"
+                "也可以重新发一张图片帮我理解"
+            ).to_sse()
+            return
 
         where   = _build_price_filter(price_max, price_min)
         fetch_k = 10   # 统一多取候选，交给 LLM 裁判精选
@@ -110,13 +122,12 @@ class SearchAgent:
         else:
             ranked = ranked[:3]
 
-        # ── Step 5: 推商品卡片（与 Step 6 的 context 完全同步）──
-        context_parts: list[str] = []
+        # ── Step 5: 推商品卡片 ───────────────────────────────
+        shown_products = []
         for rp in ranked:
             product = product_repo.get(rp["product_id"])
             if not product:
                 continue
-
             yield ev.product_card(
                 product_id=product.product_id,
                 title=product.display_title,
@@ -125,54 +136,32 @@ class SearchAgent:
                 price=product.base_price,
                 sub_category=product.sub_category,
             ).to_sse()
+            shown_products.append(product)
 
-            # 文本资料：文本检索有 hit_chunks；图搜用 marketing_description
-            if rp.get("hit_chunks"):
-                chunk_texts = "\n".join(c.content for c in rp["hit_chunks"][:3])
-            else:
-                mk = (product.rag_knowledge.marketing_description or "") if product.rag_knowledge else ""
-                chunk_texts = mk[:600]
-
-            context_parts.append(
-                f"【{product.title}】\n品牌: {product.brand} | 类目: {product.sub_category}\n{chunk_texts}"
-            )
-
-        if not context_parts:
+        if not shown_products:
             yield ev.text_delta("抱歉，商品信息暂时无法获取。").to_sse()
             return
 
-        # ── Step 6: 流式生成推荐理由 ────────────────────────
-        context = "\n\n---\n\n".join(context_parts)
+        # ── Step 6: 一句话引导 + 商品选择框 ─────────────────
+        # 不再自动输出大段推荐文字，让用户主动选择感兴趣的款式
+        intro = (
+            "根据您上传的图片，为您找到以下相似款："
+            if image_base64 else
+            "根据您的需求，为您推荐以下商品："
+        )
+        yield ev.text_delta(intro).to_sse()
 
-        history = session.get("recent_messages", [])
-
-        def _clean_content(role: str, content: str) -> str:
-            if role == "user" and content == "[图片]":
-                return "（图片搜索）"
-            return content
-
-        user_messages = [
-            {"role": m["role"], "content": _clean_content(m["role"], m["content"])}
-            for m in history[-4:]
+        _CN = ["一", "二", "三"]
+        options = [
+            f"第{_CN[i]}款：{p.display_title[:14]}"
+            for i, p in enumerate(shown_products)
         ]
+        options.append("都不是，换个方式找")
 
-        if image_base64 and not message.strip():
-            effective_message = "根据图片为我推荐相似款商品"
-        elif image_base64:
-            effective_message = f"根据图片推荐相似款，我的额外要求：{message}"
-        else:
-            effective_message = message
-
-        if not user_messages or user_messages[-1]["content"] != effective_message:
-            user_messages.append({"role": "user", "content": effective_message})
-
-        async for token in middleware.chat_stream(
-            agent_name="search",
-            user_messages=user_messages,
-            prompt_vars={"context": context},
-            temperature=0.7,
-        ):
-            yield ev.text_delta(token).to_sse()
+        yield ev.clarification(
+            question="以上商品有您想要的吗？",
+            options=options,
+        ).to_sse()
 
 
 # 图片指代词：用户文字只是指向图片，不携带额外筛选信息
