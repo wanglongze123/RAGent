@@ -63,8 +63,10 @@ class SearchAgent:
             order_info.pop("last_search_query", None)
             order_info.pop("search_questionnaire", None)
             await db.update_order_state(session_id, order_info)
+            # 同时清空已展示商品，让下次模糊查询重新触发问卷
+            await db.update_session_state(session_id, last_shown_products=[])
             yield ev.text_delta(
-                "好的！请告诉我您的新需求，也可以发一张图片帮我理解。"
+                "好的！请告诉我您想搜索的新商品，也可以发一张图片帮我理解。"
             ).to_sse()
             return
 
