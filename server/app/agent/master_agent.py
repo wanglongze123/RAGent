@@ -184,17 +184,22 @@ class MasterAgent:
         # 本轮有新商品则用新的；
         # "重新搜索"/"都不是"由 search_agent 主动清空了 last_shown_products，
         # 不能用 old_shown 覆盖回去，否则清空无效。
+        # order_agent 完成下单后也要清空，否则用户下单后搜新商品仍返回旧结果。
         _is_context_reset = (
             agent_name == "search"
             and not new_shown
             and any(kw in message for kw in ("重新搜索", "都不是"))
         )
+        _is_order_complete = (
+            agent_name == "order"
+            and not new_shown          # order_agent 从不推商品卡
+        )
         if new_shown:
             for i, p in enumerate(new_shown):
                 p["rank"] = i + 1
             shown_products = new_shown
-        elif _is_context_reset:
-            shown_products = []   # 尊重 search_agent 的主动清空
+        elif _is_context_reset or _is_order_complete:
+            shown_products = []
         else:
             shown_products = old_shown
 
