@@ -256,10 +256,10 @@ class OrderAgent:
             total_price=cart["total_price"],
         )
 
-        # 下单成功 → 清空购物车 + 清空下单流程状态 + 退出 checkout 态
+        # 下单成功 → 清空购物车 + 清空下单流程状态 + 退出 checkout 态 + 清空搜索上下文
         await db.cart_clear(session_id)
         await db.clear_order_state(session_id)
-        await db.update_session_state(session_id, agent_state="browsing")
+        await db.update_session_state(session_id, agent_state="browsing", last_shown_products=[])
 
         yield ev.text_delta(
             f"订单提交成功！\n"
