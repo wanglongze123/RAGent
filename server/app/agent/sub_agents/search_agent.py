@@ -188,7 +188,7 @@ class SearchAgent:
 
         first_opt = "加入购物车" if len(final_products) == 1 else "对比这几款"
         yield ev.clarification(
-            question="您可以横向滑动查看，或：",
+            question="点击商品卡片可查看详情和选择规格，或：",
             options=[first_opt, "细化需求", "重新搜索"],
         ).to_sse()
 
@@ -418,7 +418,7 @@ class SearchAgent:
 
         first_opt = "加入购物车" if len(shown_products) == 1 else "对比这几款"
         yield ev.clarification(
-            question="您可以横向滑动查看所有商品，或：",
+            question="点击商品卡片可查看详情和选择规格，或：",
             options=[first_opt, "细化需求", "重新搜索"],
         ).to_sse()
 
