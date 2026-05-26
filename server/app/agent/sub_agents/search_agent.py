@@ -201,14 +201,12 @@ class SearchAgent:
     ) -> AsyncIterator[str]:
         order_info["search_questionnaire"] = {
             "original_query": original_query,
-            "step": 1,
-            "collected": {},
-            "hint": _get_category_hint(original_query),
         }
         await db.update_order_state(session_id, order_info)
+        hint = _get_category_hint(original_query)
         yield ev.clarification(
-            question=f"好的，帮您搜索「{original_query}」！先了解一下：您的预算大概是多少？",
-            options=["300元以内", "300-600元", "600-1000元", "1000元以上", "不限预算"],
+            question=f"帮您搜索「{original_query}」！有什么特别要求吗？\n（{hint}，也可直接跳过）",
+            options=["直接搜索"],
         ).to_sse()
 
     # ─────────────────────────────────────────────────────────
@@ -224,10 +222,7 @@ class SearchAgent:
     ) -> AsyncIterator[str]:
 
         questionnaire = order_info.get("search_questionnaire", {})
-        step          = questionnaire.get("step", 1)
-        collected     = questionnaire.get("collected", {})
         original      = questionnaire.get("original_query", message)
-        hint          = questionnaire.get("hint", "如：特定功能、款式偏好")
 
         # 取消问卷
         if any(kw in message for kw in ("算了", "取消", "不买了", "退出")):
@@ -236,61 +231,46 @@ class SearchAgent:
             yield ev.text_delta("好的，已退出搜索。有需要随时告诉我！").to_sse()
             return
 
-        # ── Step 1：价格 ────────────────────────────────────
-        if step == 1:
-            pmin, pmax = _parse_price_option(message)
-            if pmin is not None: collected["price_min"] = pmin
-            if pmax is not None: collected["price_max"] = pmax
-            questionnaire.update({"step": 2, "collected": collected})
-            order_info["search_questionnaire"] = questionnaire
-            await db.update_order_state(session_id, order_info)
-            yield ev.clarification(
-                question="品牌有偏好吗？",
-                options=["国产品牌", "国际大牌", "不限品牌"],
-            ).to_sse()
-            return
+        # 问卷只有一步，收到回复即清除状态
+        order_info.pop("search_questionnaire", None)
+        await db.update_order_state(session_id, order_info)
 
-        # ── Step 2：品牌 ────────────────────────────────────
-        if step == 2:
-            if "国产" in message:
-                collected["brand_pref"] = "国产"
-            elif "国际大牌" in message or "大牌" in message:
-                collected["brand_pref"] = "international"
-            # "不限品牌" → 不记录，保持空
-            questionnaire.update({"step": 3, "collected": collected})
-            order_info["search_questionnaire"] = questionnaire
-            await db.update_order_state(session_id, order_info)
-            # 品类快捷选项 + 跳过；用户也可直接在输入框打字
-            quick_opts = _get_category_options(original)
-            options = quick_opts + ["没有，直接搜索"]
-            yield ev.clarification(
-                question=f"还有什么特别要求吗？（{hint}，也可直接输入）",
-                options=options,
-            ).to_sse()
-            return
-
-        # ── Step 3：品类专属 / 直接搜 ───────────────────────
-        if step == 3:
-            extra = None if message == "没有，直接搜索" else message
-            if extra:
-                collected["extra"] = extra
-
-            order_info.pop("search_questionnaire", None)
-            await db.update_order_state(session_id, order_info)
-
-            # 合并 query
-            combined_query = original
-            if extra:
-                combined_query = f"{extra}{original}"   # 修饰词前置，如"轻量跑鞋"
-            if collected.get("brand_pref") == "国产":
-                combined_query = f"国产{combined_query}"
-
+        if message == "直接搜索":
             async for e in self._do_search(
-                session_id, combined_query,
-                collected.get("price_max"), collected.get("price_min"),
-                [], [], [], session, None, order_info,
+                session_id, original, None, None, [], [], [], session, None, order_info,
             ):
                 yield e
+            return
+
+        # 从自由文本中提取价格约束
+        pmin, pmax = _parse_price_option(message)
+
+        # 从自由文本中提取品牌偏好，并拼入 query（硬过滤 incl_brands 留空，用 query 语义召回）
+        brand_prefix = ""
+        if "国产" in message:
+            brand_prefix = "国产"
+        elif any(kw in message for kw in ("国际", "大牌", "进口")):
+            brand_prefix = "国际大牌"
+
+        # 剩余部分作为额外需求修饰词（去掉价格和品牌关键词后的内容）
+        extra = _re.sub(
+            r"\d+(?:\.\d+)?\s*(?:元以内|元以下|以内|以下|元以上|以上)"
+            r"|\d+(?:\.\d+)?\s*[-~～到]\s*\d+(?:\.\d+)?\s*元?"
+            r"|国产品牌?|国际大牌?|大牌|进口品牌?|不限品牌?"
+            r"|[，,、。.]+",
+            " ", message,
+        ).strip()
+
+        combined_query = original
+        if extra:
+            combined_query = f"{extra} {combined_query}"
+        if brand_prefix:
+            combined_query = f"{brand_prefix} {combined_query}"
+
+        async for e in self._do_search(
+            session_id, combined_query, pmax, pmin, [], [], [], session, None, order_info,
+        ):
+            yield e
 
     # ─────────────────────────────────────────────────────────
     # 核心检索逻辑（原 run() Steps 2-6）
