@@ -10,6 +10,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
 import java.io.File
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -19,11 +21,14 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -58,6 +63,7 @@ import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -66,12 +72,13 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -90,8 +97,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -108,6 +118,9 @@ import com.ragent.shopping.data.model.ChatMessage
 import com.ragent.shopping.data.model.ComparisonTable
 import com.ragent.shopping.data.model.Product
 import com.ragent.shopping.data.remote.NetworkConfig
+import com.ragent.shopping.ui.theme.BrandIndigo
+import com.ragent.shopping.ui.theme.BrandSky
+import com.ragent.shopping.ui.theme.BrandViolet
 import com.ragent.shopping.ui.viewmodel.ChatViewModel
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
@@ -195,25 +208,45 @@ fun ChatScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("RAGent 导购", fontWeight = FontWeight.Bold) },
-                actions = {
-                    BadgedBox(
-                        badge = {
-                            if (uiState.cartBadgeCount > 0) {
-                                Badge { Text("${uiState.cartBadgeCount}") }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        Brush.horizontalGradient(
+                            colors = listOf(BrandIndigo, BrandViolet, Color(0xFF7C4DFF)),
+                        )
+                    )
+            ) {
+                TopAppBar(
+                    title = {
+                        Text(
+                            "RAGent 导购",
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White,
+                        )
+                    },
+                    actions = {
+                        BadgedBox(
+                            badge = {
+                                if (uiState.cartBadgeCount > 0) {
+                                    Badge { Text("${uiState.cartBadgeCount}") }
+                                }
+                            }
+                        ) {
+                            IconButton(onClick = onNavigateToCart) {
+                                Icon(
+                                    Icons.Default.ShoppingCart,
+                                    contentDescription = "购物车",
+                                    tint = Color.White,
+                                )
                             }
                         }
-                    ) {
-                        IconButton(onClick = onNavigateToCart) {
-                            Icon(Icons.Default.ShoppingCart, contentDescription = "购物车")
-                        }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                ),
-            )
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = Color.Transparent,
+                    ),
+                )
+            }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { paddingValues ->
@@ -293,80 +326,140 @@ private fun ChatInputBar(
     var inputText by remember { mutableStateOf("") }
     val canSend = (inputText.isNotBlank() || pendingBitmap != null) && !isLoading
 
-    Surface(shadowElevation = 8.dp) {
-        Column {
-            // 图片预览行（有 pending 图片时显示）
-            if (pendingBitmap != null) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box {
-                        androidx.compose.foundation.Image(
-                            bitmap = pendingBitmap.asImageBitmap(),
-                            contentDescription = "待发送图片",
-                            modifier = Modifier
-                                .size(64.dp)
-                                .clip(RoundedCornerShape(8.dp)),
-                            contentScale = ContentScale.Crop,
-                        )
-                        IconButton(
-                            onClick = onClearImage,
-                            modifier = Modifier
-                                .size(20.dp)
-                                .align(Alignment.TopEnd)
-                                .background(MaterialTheme.colorScheme.surface, CircleShape),
-                        ) {
-                            Icon(Icons.Default.Close, contentDescription = "移除图片", modifier = Modifier.size(12.dp))
-                        }
+    // 流光渐变：发送按钮
+    val sendTransition = rememberInfiniteTransition(label = "send_gradient")
+    val sendShift by sendTransition.animateFloat(
+        initialValue = -400f,
+        targetValue = 400f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(2000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "send_shift",
+    )
+    val sendGradient = Brush.linearGradient(
+        colors = listOf(BrandIndigo, BrandViolet, BrandSky, BrandIndigo),
+        start = Offset(sendShift, 0f),
+        end = Offset(sendShift + 400f, 200f),
+    )
+
+    Column(modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp, top = 6.dp)) {
+        // 图片预览行
+        if (pendingBitmap != null) {
+            Row(
+                modifier = Modifier.padding(bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box {
+                    androidx.compose.foundation.Image(
+                        bitmap = pendingBitmap.asImageBitmap(),
+                        contentDescription = "待发送图片",
+                        modifier = Modifier
+                            .size(64.dp)
+                            .clip(RoundedCornerShape(10.dp)),
+                        contentScale = ContentScale.Crop,
+                    )
+                    IconButton(
+                        onClick = onClearImage,
+                        modifier = Modifier
+                            .size(20.dp)
+                            .align(Alignment.TopEnd)
+                            .background(MaterialTheme.colorScheme.surface, CircleShape),
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "移除图片", modifier = Modifier.size(12.dp))
                     }
-                    Spacer(Modifier.width(8.dp))
-                    Text("图片已选择，可输入文字后发送", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
                 }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "图片已选择，可输入文字后发送",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
             }
+        }
+
+        // 输入卡片（豆包风格浮动胶囊）
+        Surface(
+            shape = RoundedCornerShape(28.dp),
+            shadowElevation = 10.dp,
+            color = MaterialTheme.colorScheme.surface,
+        ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = onCameraClick, enabled = !isLoading) {
-                    Icon(Icons.Default.CameraAlt, contentDescription = "拍照找货", tint = MaterialTheme.colorScheme.primary)
+                IconButton(onClick = onCameraClick, enabled = !isLoading, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        Icons.Default.CameraAlt,
+                        contentDescription = "拍照找货",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp),
+                    )
                 }
-                IconButton(onClick = onGalleryClick, enabled = !isLoading) {
-                    Icon(Icons.Default.Image, contentDescription = "从相册选图", tint = MaterialTheme.colorScheme.primary)
+                IconButton(onClick = onGalleryClick, enabled = !isLoading, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        Icons.Default.Image,
+                        contentDescription = "从相册选图",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp),
+                    )
                 }
-            OutlinedTextField(
-                value = inputText,
-                onValueChange = { inputText = it },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("说点什么...") },
-                maxLines = 4,
-                shape = RoundedCornerShape(24.dp),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = {
-                    if (canSend) {
-                        onSend(inputText.trim())
-                        inputText = ""
+                OutlinedTextField(
+                    value = inputText,
+                    onValueChange = { inputText = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = {
+                        Text(
+                            "说点什么...",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.outline,
+                        )
+                    },
+                    maxLines = 4,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor    = Color.Transparent,
+                        unfocusedBorderColor  = Color.Transparent,
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                    ),
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = {
+                        if (canSend) { onSend(inputText.trim()); inputText = "" }
+                    }),
+                )
+                Spacer(Modifier.width(4.dp))
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(if (canSend) sendGradient else Brush.linearGradient(
+                            listOf(
+                                MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                                MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                            )
+                        ))
+                        .clickable(enabled = canSend) { onSend(inputText.trim()); inputText = "" },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = Color.White,
+                        )
+                    } else {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "发送",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp),
+                        )
                     }
-                }),
-            )
-            Spacer(Modifier.width(4.dp))
-            IconButton(
-                onClick = {
-                    if (canSend) {
-                        onSend(inputText.trim())
-                        inputText = ""
-                    }
-                },
-                enabled = canSend,
-            ) {
-                if (isLoading) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送", tint = MaterialTheme.colorScheme.primary)
                 }
-            }
+                Spacer(Modifier.width(4.dp))
             }
         }
     }
@@ -413,17 +506,20 @@ private fun UserBubble(text: String, bitmap: android.graphics.Bitmap? = null) {
                 if (text.isNotBlank()) Spacer(Modifier.height(4.dp))
             }
             if (text.isNotBlank()) {
-                Surface(
-                    shape = RoundedCornerShape(topStart = 16.dp, topEnd = 4.dp, bottomStart = 16.dp, bottomEnd = 16.dp),
-                    color = MaterialTheme.colorScheme.primary,
+                Box(
+                    modifier = Modifier
+                        .widthIn(max = 280.dp)
+                        .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 4.dp, bottomStart = 16.dp, bottomEnd = 16.dp))
+                        .background(
+                            Brush.linearGradient(
+                                colors = listOf(BrandIndigo, BrandViolet),
+                                start = Offset(0f, 0f),
+                                end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
+                            )
+                        )
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
                 ) {
-                    Text(
-                        text = text,
-                        modifier = Modifier
-                            .widthIn(max = 280.dp)
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                        color = MaterialTheme.colorScheme.onPrimary,
-                    )
+                    Text(text = text, color = Color.White, style = MaterialTheme.typography.bodyMedium)
                 }
             }
         }
@@ -436,13 +532,17 @@ private fun AiTextBubble(text: String, isStreaming: Boolean) {
     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
         Surface(
             shape = RoundedCornerShape(topStart = 4.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 16.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant,
+            color = MaterialTheme.colorScheme.surface,
+            shadowElevation = 2.dp,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         ) {
             Text(
                 text = displayText,
                 modifier = Modifier
                     .widthIn(max = 300.dp)
                     .padding(horizontal = 14.dp, vertical = 10.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
             )
         }
     }
@@ -450,13 +550,45 @@ private fun AiTextBubble(text: String, isStreaming: Boolean) {
 
 @Composable
 private fun StatusBubble(message: String) {
-    Row(
-        modifier = Modifier.padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-        Spacer(Modifier.width(8.dp))
-        Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+        Surface(
+            shape = RoundedCornerShape(topStart = 4.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 16.dp),
+            color = MaterialTheme.colorScheme.surface,
+            shadowElevation = 2.dp,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                val transition = rememberInfiniteTransition(label = "typing")
+                repeat(3) { i ->
+                    val scale by transition.animateFloat(
+                        initialValue = 0.5f,
+                        targetValue = 1f,
+                        animationSpec = infiniteRepeatable(
+                            animation = tween(500, delayMillis = i * 160, easing = FastOutSlowInEasing),
+                            repeatMode = RepeatMode.Reverse,
+                        ),
+                        label = "dot_$i",
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .graphicsLayer { scaleX = scale; scaleY = scale }
+                            .clip(CircleShape)
+                            .background(BrandIndigo.copy(alpha = 0.4f + 0.6f * scale)),
+                    )
+                }
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 
@@ -544,7 +676,7 @@ private fun ProductCarousel(
 
         Spacer(Modifier.height(10.dp))
 
-        // 页码指示点
+        // 页码指示点（当前页拉伸为胶囊形）
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.Center,
@@ -555,11 +687,14 @@ private fun ProductCarousel(
                 Box(
                     modifier = Modifier
                         .padding(horizontal = 3.dp)
-                        .size(if (selected) 8.dp else 6.dp)
-                        .clip(CircleShape)
+                        .then(
+                            if (selected) Modifier.size(width = 20.dp, height = 6.dp)
+                            else Modifier.size(6.dp)
+                        )
+                        .clip(RoundedCornerShape(3.dp))
                         .background(
-                            if (selected) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                            if (selected) BrandIndigo
+                            else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
                         )
                 )
             }
@@ -645,11 +780,21 @@ private fun ProductCardLarge(product: Product, onClick: () -> Unit) {
                         color = MaterialTheme.colorScheme.error,
                         fontWeight = FontWeight.Bold,
                     )
-                    Text(
-                        "查看详情 ›",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(
+                                Brush.linearGradient(listOf(BrandIndigo, BrandViolet))
+                            )
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                    ) {
+                        Text(
+                            "查看详情 ›",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
                 }
             }
         }
@@ -712,23 +857,35 @@ private fun ComparisonMessage(table: ComparisonTable, onProductClick: (String) -
 
 // ===== 反问选项 =====
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ClarificationMessage(question: String, options: List<String>, onSelected: (String) -> Unit) {
     Column {
-        AiTextBubble(question, isStreaming = false)
-        Spacer(Modifier.height(8.dp))
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (question.isNotBlank()) AiTextBubble(question, isStreaming = false)
+        Spacer(Modifier.height(10.dp))
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             options.forEach { option ->
-                OutlinedButton(
-                    onClick = { onSelected(option) },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(
+                            Brush.linearGradient(listOf(BrandIndigo, BrandViolet)),
+                            RoundedCornerShape(20.dp),
+                        )
+                        .padding(1.5.dp)
+                        .clip(RoundedCornerShape(18.5.dp))
+                        .background(MaterialTheme.colorScheme.surface)
+                        .clickable { onSelected(option) }
+                        .padding(horizontal = 16.dp, vertical = 9.dp),
                 ) {
                     Text(
                         option,
                         style = MaterialTheme.typography.bodyMedium,
-                        textAlign = TextAlign.Center,
+                        color = BrandIndigo,
+                        fontWeight = FontWeight.Medium,
                     )
                 }
             }
@@ -927,6 +1084,22 @@ private fun ProductDetailSheet(
                 }
 
                 // ── 操作按钮（大尺寸圆角胶囊形）──
+                val cartTransition = rememberInfiniteTransition(label = "cart_gradient")
+                val cartShift by cartTransition.animateFloat(
+                    initialValue = -400f,
+                    targetValue = 400f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(2000, easing = LinearEasing),
+                        repeatMode = RepeatMode.Restart,
+                    ),
+                    label = "cart_shift",
+                )
+                val cartGradient = Brush.linearGradient(
+                    colors = listOf(BrandIndigo, BrandViolet, BrandSky, BrandIndigo),
+                    start = Offset(cartShift, 0f),
+                    end = Offset(cartShift + 400f, 200f),
+                )
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -942,26 +1115,42 @@ private fun ProductDetailSheet(
                             .weight(1f)
                             .height(54.dp),
                         shape = RoundedCornerShape(27.dp),
+                        border = BorderStroke(
+                            1.5.dp,
+                            Brush.linearGradient(listOf(BrandIndigo, BrandViolet)),
+                        ),
                     ) {
                         Text(
                             "继续看看",
                             style = MaterialTheme.typography.titleSmall,
+                            color = BrandIndigo,
                         )
                     }
-                    Button(
-                        onClick = {
-                            matchedSku?.let { onAddToCart(product.productId, it.skuId) }
-                        },
+                    Box(
                         modifier = Modifier
                             .weight(1.4f)
-                            .height(54.dp),
-                        shape = RoundedCornerShape(27.dp),
-                        enabled = matchedSku != null,
+                            .height(54.dp)
+                            .clip(RoundedCornerShape(27.dp))
+                            .background(
+                                if (matchedSku != null) cartGradient
+                                else Brush.linearGradient(
+                                    listOf(
+                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
+                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
+                                    )
+                                )
+                            )
+                            .clickable(enabled = matchedSku != null) {
+                                matchedSku?.let { onAddToCart(product.productId, it.skuId) }
+                            },
+                        contentAlignment = Alignment.Center,
                     ) {
                         Text(
                             "加入购物车",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
+                            color = if (matchedSku != null) Color.White
+                                    else MaterialTheme.colorScheme.outline,
                         )
                     }
                 }
