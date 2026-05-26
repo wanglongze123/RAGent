@@ -286,6 +286,7 @@ class OrderAgent:
         if last_shown:
             _CN = ["第一款", "第二款", "第三款", "第四款", "第五款"]
             options = [f"加购{_CN[i]}" for i in range(min(len(last_shown), 5))]
+            options.append("细化需求")
             options.append("重新搜索")
             yield ev.clarification(
                 question="您可以继续购物：",
