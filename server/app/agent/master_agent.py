@@ -181,11 +181,20 @@ class MasterAgent:
                 if token:
                     assistant_text.append(token)
 
-        # 本轮有新商品则用新的，否则保留上一轮的（购物车/下单等不展示商品的操作）
+        # 本轮有新商品则用新的；
+        # "重新搜索"/"都不是"由 search_agent 主动清空了 last_shown_products，
+        # 不能用 old_shown 覆盖回去，否则清空无效。
+        _is_context_reset = (
+            agent_name == "search"
+            and not new_shown
+            and any(kw in message for kw in ("重新搜索", "都不是"))
+        )
         if new_shown:
             for i, p in enumerate(new_shown):
                 p["rank"] = i + 1
             shown_products = new_shown
+        elif _is_context_reset:
+            shown_products = []   # 尊重 search_agent 的主动清空
         else:
             shown_products = old_shown
 
