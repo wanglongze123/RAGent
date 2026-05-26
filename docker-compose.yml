@@ -8,6 +8,9 @@ services:
     volumes:
       # 向量库持久化到本地，容器重启不丢数据
       - ./server/chroma_db:/app/chroma_db
-      # 挂载数据集（不打进镜像，体积太大）
-      - ./ecommerce_agent_dataset:/app/data
+      # 数据集：容器内路径需与 config.py 的 dataset_dir 默认值 "../ecommerce_agent_dataset" 对齐
+      # 从 /app 往上一级就是 /ecommerce_agent_dataset
+      - ./ecommerce_agent_dataset:/ecommerce_agent_dataset
+      # reranker 模型：避免每次 build 重新下载
+      - ./server/models:/app/models
     restart: unless-stopped
