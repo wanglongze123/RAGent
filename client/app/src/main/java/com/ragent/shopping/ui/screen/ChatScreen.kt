@@ -634,12 +634,23 @@ private fun ProductCardLarge(product: Product, onClick: () -> Unit) {
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(8.dp))
-                Text(
-                    "¥%.2f 起".format(product.displayPrice),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.error,
-                    fontWeight = FontWeight.Bold,
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "¥%.2f 起".format(product.displayPrice),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "查看详情 ›",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
         }
     }
