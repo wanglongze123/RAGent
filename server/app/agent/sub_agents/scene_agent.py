@@ -66,7 +66,12 @@ class SceneAgent:
             )
             for t in topics
         ]
-        results: list[list[dict]] = await asyncio.gather(*retrieve_tasks)
+        # return_exceptions=True：任一主题检索失败（Doubao 限流/超时）时不中断整体流程，
+        # 失败主题降级为空列表，其余主题正常展示。
+        raw_results = await asyncio.gather(*retrieve_tasks, return_exceptions=True)
+        results: list[list[dict]] = [
+            r if not isinstance(r, Exception) else [] for r in raw_results
+        ]
 
         # ── Step 4: 推 product_card + 整理 LLM 上下文 ──────
         # 不同主题间可能召回同一商品（小数据集尤其常见），按 product_id 去重，
