@@ -87,7 +87,7 @@ class SearchAgent:
         # 原则：初次召回是"撒网"，后续细化是"在网里捞"
         # 避免因细化条件重新发散检索导致上下文丢失
         last_shown = session.get("last_shown_products", [])
-        if last_shown and not image_base64:
+        if last_shown and not image_base64 and not params.get("scene_topic"):
             async for e in self._refine_in_candidates(
                 session_id, last_shown, query, price_max, price_min,
                 incl_brands, excl_brands, session, order_info,
