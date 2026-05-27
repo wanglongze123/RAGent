@@ -261,6 +261,20 @@ class OrderAgent:
         await db.clear_order_state(session_id)
         await db.update_session_state(session_id, agent_state="browsing", last_shown_products=[])
 
+        # 通知客户端清空购物车角标（cart_clear 改了 DB，但客户端只通过 cart_update 事件
+        # 同步 badge；不发这条事件 → UI 红点保留旧数字）。toast 留空，避免和下方
+        # text_delta "订单提交成功" 重复弹提示。
+        yield ev.cart_update(
+            action="checkout",
+            product_id="",
+            sku_id="",
+            title="",
+            quantity=0,
+            cart_total_count=0,
+            cart_total_price=0.0,
+            message="",
+        ).to_sse()
+
         yield ev.text_delta(
             f"订单提交成功！\n"
             f"订单号：{order['order_id']}\n"

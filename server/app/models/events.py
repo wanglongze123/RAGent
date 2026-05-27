@@ -79,7 +79,7 @@ def product_card_list(products: list[dict], search_type: str = "text") -> SSEEve
 
 
 def cart_update(
-    action: str,  # "add" | "remove" | "update_quantity"
+    action: str,  # "add" | "remove" | "update_quantity" | "checkout"（下单后清空）
     product_id: str,
     sku_id: str,
     title: str,
