@@ -1,29 +1,31 @@
 """
-Scene Agent — 场景化组合推荐（⭐⭐⭐ 加分项）。
+Scene Agent — 场景化购物方案规划。
 
-Skill 流程：
-  Step 1: LLM 把场景拆解为 2-4 个购物主题（JSON Mode）
-  Step 2: asyncio.gather 并行检索所有主题
-  Step 3: 推 product_card 事件（按主题顺序展示）
-  Step 4: 流式生成场景化搭配推荐文案
+新版职责（与最初实现不同）：
+  Step 1: 拦截 "重新规划" / "结束购物" 等控制指令，清空 scene_context
+  Step 2: 用 LLM 把场景拆成 2-4 个主题（theme + query）
+  Step 3: 保存 scene_context 到 DB（不立即检索、不推商品卡片）
+  Step 4: 推一段文字概述 + 主题选择按钮
+  后续：用户点击 "了解X" → master 路由到 search_agent 走单品流程
 
-适用消息：
-  "下周去三亚度假，搭配防晒+穿搭整套方案"
-  "夏天露营要带啥？"
-  "给我妈准备生日礼物"
-
-为什么不复用 search_agent：
-  search_agent 是单 query 单类目，scene_agent 是多 query 跨类目。
-  把场景规划的复杂度封装在独立 agent 里，search/compare/cart 都不用关心。
+为什么不再直接推商品卡片：
+  之前一次性推所有主题的商品，跨类目混排，用户看不出主题分组；
+  且后续点击其他主题时会重复推同一批卡片，体验割裂。
+  新流程让用户主动选择主题，每个主题独立走 search_agent，
+  和单品流程完全统一（包括问卷、加购、对比、下单）。
 """
-import asyncio
 import json
+from datetime import datetime
 from typing import AsyncIterator
 
 from app.agent.middleware import middleware
-from app.db.product_repo import product_repo
+from app.db import relational as db
 from app.models import events as ev
-from app.rag.hybrid_retriever import hybrid_retriever
+
+
+# 用户主动控制 scene 生命周期的关键词
+_REPLAN_KEYWORDS = ["重新规划"]
+_END_KEYWORDS = ["结束购物"]
 
 
 class SceneAgent:
@@ -37,95 +39,81 @@ class SceneAgent:
         image_base64: str | None = None,
     ) -> AsyncIterator[str]:
 
-        # ── Step 1: 告知用户在规划 ─────────────────────────
+        # ── Step 1: 控制指令拦截（结束购物 / 重新规划）─────────
+        if any(k in message for k in _END_KEYWORDS):
+            await db.clear_scene_context(session_id)
+            yield ev.text_delta("好的，本次场景购物已结束，期待下次为您服务～").to_sse()
+            return
+
+        if any(k in message for k in _REPLAN_KEYWORDS):
+            await db.clear_scene_context(session_id)
+            yield ev.text_delta(
+                "好的，已清空当前方案。请重新描述您的场景需求，比如换个时间、地点、人群或预算～"
+            ).to_sse()
+            return
+
+        # ── Step 2: 告知用户在规划 ─────────────────────────
         yield ev.tool_progress("scene_plan", "正在为您规划方案…").to_sse()
 
-        # ── Step 2: LLM 拆解场景 ───────────────────────────
+        # ── Step 3: LLM 拆解场景 ───────────────────────────
         plan = await self._plan_scene(message)
         if not plan or not plan.get("topics"):
-            # 拆解失败时降级走 search agent — 把整条消息当 query
+            # 拆解失败：清空可能存在的旧 context，引导用户走普通搜索
+            await db.clear_scene_context(session_id)
             yield ev.text_delta(
-                "暂时没能识别您的场景需求，让我按整体推荐来找几款～\n"
+                "暂时没能识别您的场景需求，您可以换个表达，"
+                "或直接告诉我想买的具体商品类目～"
             ).to_sse()
             return
 
-        scene_summary = plan.get("scene_summary", "")
-        topics: list[dict] = plan["topics"][:4]  # 最多 4 个主题，防止商品太多
+        scene_summary = plan.get("scene_summary", "").strip()
+        raw_topics: list[dict] = plan.get("topics", [])[:4]
 
-        yield ev.tool_progress(
-            "scene_plan",
-            f"已拆解为 {len(topics)} 个主题：" + " / ".join(t.get("theme", "") for t in topics),
+        # 校验并清洗 topics：必须有 theme 和 query，theme 唯一
+        topics: list[dict] = []
+        seen_themes: set[str] = set()
+        for t in raw_topics:
+            theme = (t.get("theme") or "").strip()
+            query = (t.get("query") or "").strip()
+            if not theme or not query:
+                continue
+            if theme in seen_themes:
+                continue
+            seen_themes.add(theme)
+            topics.append({"theme": theme, "query": query})
+
+        if not topics:
+            await db.clear_scene_context(session_id)
+            yield ev.text_delta(
+                "暂时没能识别出有效的主题，您可以换个表达再试试～"
+            ).to_sse()
+            return
+
+        # ── Step 4: 保存 scene_context ─────────────────────
+        scene_context = {
+            "original_message": message,
+            "scene_summary": scene_summary,
+            "topics": topics,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        await db.save_scene_context(session_id, scene_context)
+
+        # ── Step 5: 推方案概述 ─────────────────────────────
+        theme_list = "、".join(f"「{t['theme']}」" for t in topics)
+        intro = (
+            f"已为您规划好方案：{scene_summary}\n"
+            f"包含 {len(topics)} 个主题：{theme_list}\n"
+            f"请选择您想先了解的主题，我会针对该主题为您推荐商品。"
+        )
+        # 用 text_delta 推一次完整文本（不流式）
+        yield ev.text_delta(intro).to_sse()
+
+        # ── Step 6: 主题选择按钮 ───────────────────────────
+        options = [f"了解{t['theme']}" for t in topics] + ["重新规划"]
+        yield ev.clarification(
+            question="您想先了解哪个主题？",
+            options=options,
         ).to_sse()
-
-        # ── Step 3: 并行检索所有主题 ──────────────────────
-        retrieve_tasks = [
-            hybrid_retriever.retrieve_products(
-                query=t["query"],
-                top_k_chunks=max(int(t.get("count", 1)), 1) * 6,
-                top_k_products=max(int(t.get("count", 1)), 1),
-            )
-            for t in topics
-        ]
-        # return_exceptions=True：任一主题检索失败（Doubao 限流/超时）时不中断整体流程，
-        # 失败主题降级为空列表，其余主题正常展示。
-        raw_results = await asyncio.gather(*retrieve_tasks, return_exceptions=True)
-        results: list[list[dict]] = [
-            r if not isinstance(r, Exception) else [] for r in raw_results
-        ]
-
-        # ── Step 4: 推 product_card + 整理 LLM 上下文 ──────
-        # 不同主题间可能召回同一商品（小数据集尤其常见），按 product_id 去重，
-        # 同一商品只 yield 一次，归到首次出现的主题下。
-        topics_with_products: list[str] = []
-        seen_product_ids: set[str] = set()
-        any_yielded = False
-        for topic, hits in zip(topics, results):
-            theme_name = topic.get("theme", "")
-            theme_lines = [f"主题：{theme_name}"]
-            theme_has_item = False
-            for rp in hits:
-                pid = rp["product_id"]
-                if pid in seen_product_ids:
-                    continue
-                product = product_repo.get(pid)
-                if not product:
-                    continue
-                seen_product_ids.add(pid)
-                yield ev.product_card(
-                    product_id=product.product_id,
-                    title=product.display_title,
-                    brand=product.brand,
-                    image_url=product.image_url,
-                    price=product.base_price,
-                    sub_category=product.sub_category,
-                ).to_sse()
-                any_yielded = True
-                theme_has_item = True
-
-                chunk_texts = "\n".join(c.content for c in rp["hit_chunks"][:2])
-                theme_lines.append(
-                    f"  - 【{product.title}】{product.brand} | ¥{product.base_price}\n    {chunk_texts}"
-                )
-            if theme_has_item:
-                topics_with_products.append("\n".join(theme_lines))
-
-        if not any_yielded:
-            yield ev.text_delta(
-                "抱歉，按当前主题没找到合适的商品，您可以换个表达再试试～"
-            ).to_sse()
-            return
-
-        # ── Step 5: 流式生成场景搭配推荐 ────────────────────
-        async for token in middleware.chat_stream(
-            agent_name="scene",
-            user_messages=[{"role": "user", "content": message}],
-            prompt_vars={
-                "scene_summary": scene_summary,
-                "topics_with_products": "\n\n".join(topics_with_products),
-            },
-            temperature=0.7,
-        ):
-            yield ev.text_delta(token).to_sse()
 
     # ─────────────────────────────────────────────────────
     # 私有方法
@@ -133,12 +121,17 @@ class SceneAgent:
 
     async def _plan_scene(self, message: str) -> dict | None:
         """LLM 拆解场景为主题列表，返回解析后字典或 None"""
-        raw = await middleware.chat(
-            agent_name="scene_planning",
-            user_messages=[{"role": "user", "content": message}],
-            json_mode=True,
-            temperature=0.3,
-        )
+        try:
+            raw = await middleware.chat(
+                agent_name="scene_planning",
+                user_messages=[{"role": "user", "content": message}],
+                json_mode=True,
+                temperature=0.3,
+            )
+        except Exception as e:
+            print(f"[scene_agent] _plan_scene LLM 调用失败: {e}")
+            return None
+
         try:
             data = json.loads(raw)
             if isinstance(data, dict) and isinstance(data.get("topics"), list):

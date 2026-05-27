@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     agent_state         TEXT NOT NULL DEFAULT 'browsing',
     last_shown_products TEXT NOT NULL DEFAULT '[]',
     order_state         TEXT NOT NULL DEFAULT '{}',
+    scene_context       TEXT NOT NULL DEFAULT '{}',
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
 );
@@ -78,12 +79,16 @@ async def init_db() -> None:
     async with aiosqlite.connect(settings.sqlite_db_path) as db:
         await db.executescript(CREATE_TABLES_SQL)
 
-        # 迁移：已存在的 sessions 表补上 order_state 字段
+        # 迁移：已存在的 sessions 表补上新字段
         cursor = await db.execute("PRAGMA table_info(sessions)")
         columns = [row[1] for row in await cursor.fetchall()]
         if "order_state" not in columns:
             await db.execute(
                 "ALTER TABLE sessions ADD COLUMN order_state TEXT NOT NULL DEFAULT '{}'"
+            )
+        if "scene_context" not in columns:
+            await db.execute(
+                "ALTER TABLE sessions ADD COLUMN scene_context TEXT NOT NULL DEFAULT '{}'"
             )
 
         await db.commit()
@@ -115,6 +120,7 @@ async def get_session(session_id: str) -> Optional[dict]:
     d = dict(row)
     d["last_shown_products"] = json.loads(d["last_shown_products"])
     d["order_state"] = json.loads(d.get("order_state") or "{}")
+    d["scene_context"] = json.loads(d.get("scene_context") or "{}")
     return d
 
 
@@ -134,6 +140,24 @@ async def update_order_state(session_id: str, order_state: dict) -> None:
 
 async def clear_order_state(session_id: str) -> None:
     await update_order_state(session_id, {})
+
+
+async def save_scene_context(session_id: str, scene_context: dict) -> None:
+    """持久化场景化购物上下文（主题 + 检索 query），下单完成后保留，由用户手动结束/重规划时清空"""
+    async with aiosqlite.connect(settings.sqlite_db_path) as db:
+        await db.execute(
+            "UPDATE sessions SET scene_context = ?, updated_at = ? WHERE session_id = ?",
+            (
+                json.dumps(scene_context, ensure_ascii=False),
+                datetime.utcnow().isoformat(),
+                session_id,
+            ),
+        )
+        await db.commit()
+
+
+async def clear_scene_context(session_id: str) -> None:
+    await save_scene_context(session_id, {})
 
 
 async def update_session_state(

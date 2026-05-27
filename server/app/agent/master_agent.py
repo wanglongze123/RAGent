@@ -18,6 +18,7 @@ from app.agent.middleware import middleware
 from app.agent.state_machine import AgentState, get_next_state, is_agent_allowed
 from app.db.relational import (
     add_message,
+    cart_get,
     create_session,
     get_recent_messages,
     get_session,
@@ -124,7 +125,11 @@ class MasterAgent:
                 session.get("last_shown_products") or
                 (session.get("order_state") or {}).get("last_search_query")
             )
-            if not has_search_context and not _is_query_specific_enough(params):
+            # scene 主题点击进入的 search：query 来自规划，已足够具体，不触发问卷
+            from_scene_topic = bool(params.get("scene_topic"))
+            if (not has_search_context
+                    and not from_scene_topic
+                    and not _is_query_specific_enough(params)):
                 params = dict(params)
                 params["_needs_questionnaire"] = True
 
@@ -152,6 +157,14 @@ class MasterAgent:
 
         # 商品卡是否已即时持久化过（避免客户端中途断开导致 last_shown 丢失）
         last_shown_persisted = False
+
+        # 记录 dispatch 前的购物车数量：
+        # 用于判断 order_agent 是否真的提交了订单（提交成功 → 清空购物车）。
+        # 仅在路由到 order 时记录，避免无谓的 DB 查询。
+        pre_cart_count = 0
+        if agent_name == "order":
+            pre_cart = await cart_get(session_id)
+            pre_cart_count = pre_cart.get("total_count", 0)
 
         async for event_str in self._dispatch(
             agent_name, session_id, message, params, session, image_base64
@@ -190,9 +203,18 @@ class MasterAgent:
             and not new_shown
             and any(kw in message for kw in ("重新搜索", "都不是"))
         )
+        # 真正的下单完成判定：
+        # order_agent 走多个阶段（购物车确认 / 收货信息 / 提交订单），不能仅凭
+        # agent_name == "order" 判断。提交成功后会清空购物车（order_create →
+        # cart_clear），取消下单不清空，因此用"购物车数量从非零变零"作为唯一可靠信号。
+        post_cart_count = pre_cart_count
+        if agent_name == "order" and pre_cart_count > 0:
+            post_cart = await cart_get(session_id)
+            post_cart_count = post_cart.get("total_count", 0)
         _is_order_complete = (
             agent_name == "order"
-            and not new_shown          # order_agent 从不推商品卡
+            and pre_cart_count > 0
+            and post_cart_count == 0
         )
         if new_shown:
             for i, p in enumerate(new_shown):
@@ -224,6 +246,20 @@ class MasterAgent:
         if assistant_text:
             await add_message(session_id, "assistant", "".join(assistant_text))
 
+        # ── 10.5 scene 后续引导 ────────────────────────────
+        # 下单完成时如果 scene_context 还在，注入主题选择 clarification，
+        # 让用户继续浏览场景里其他主题或主动结束购物。
+        if _is_order_complete:
+            scene_ctx = session.get("scene_context") or {}
+            sc_topics = scene_ctx.get("topics") or []
+            if sc_topics:
+                options = [f"了解{t['theme']}" for t in sc_topics if t.get("theme")]
+                options.append("结束购物")
+                yield ev.clarification(
+                    question="订单已提交！还想看场景里的其他主题吗？",
+                    options=options,
+                ).to_sse()
+
         # ── 11. done 事件 ──────────────────────────────────
         yield ev.done(session_id, next_state.value).to_sse()
 
@@ -253,6 +289,13 @@ class MasterAgent:
         # 问卷收集阶段：所有消息直接转给 search_agent 作为问卷回复
         if order_state.get("search_questionnaire"):
             return _quick_dict("search", {"questionnaire_reply": message})
+
+        # scene 主题导航："了解X" 且 X 在 scene_context.topics 中 → 走 search 流程
+        # 必须放在 product_inquiry / quick_classify 之前，主题名可能含"防晒"等
+        # 否则可能被其他关键词截走
+        scene_topic = _match_scene_topic(message, session)
+        if scene_topic is not None:
+            return scene_topic
 
         # product_inquiry 优先于 _quick_classify，防止"有什么/怎么样"被 search 关键词截走
         if _is_product_inquiry(message, session):
@@ -453,6 +496,37 @@ def _is_query_specific_enough(params: dict) -> bool:
     return len(meaningful) >= 3  # 3字以上（"纯牛奶"/"防水跑鞋"/"蒙牛牌子"等）直接搜
 
 
+def _match_scene_topic(message: str, session: dict) -> Optional[dict]:
+    """
+    场景主题导航：识别 "了解X" 模式，X 必须严格等于 scene_context.topics 中某个 theme。
+
+    设计要点：
+      - 只匹配以"了解"开头且后续 theme 在场景上下文里的消息，避免误判用户自然语句
+        （如"了解一下护肤流程"——theme 不会等于"一下护肤流程"，自然不命中）
+      - 匹配成功 → 返回 search 意图，query 取自该 topic 预先规划的 query
+      - 复用 search_agent 完整流程（问卷/检索/推卡/加购/对比/下单）
+    """
+    if not message:
+        return None
+    msg = message.strip()
+    if not msg.startswith("了解"):
+        return None
+    theme = msg[len("了解"):].strip()
+    if not theme:
+        return None
+
+    scene_ctx = session.get("scene_context") or {}
+    topics = scene_ctx.get("topics") or []
+    for t in topics:
+        if t.get("theme") == theme:
+            query = (t.get("query") or "").strip() or theme
+            return _quick_dict("search", {
+                "query": query,
+                "scene_topic": theme,   # 调试标记：标识本轮 search 来自 scene 导航
+            })
+    return None
+
+
 def _is_product_inquiry(message: str, session: dict) -> bool:
     """
     判断是否为对已展示商品的追问：
@@ -495,6 +569,9 @@ _SEARCH_KEYWORDS = [
     "细化需求", "重新搜索",   # 系统生成的固定按钮文字，直接快速路由
 ]
 
+# scene 生命周期控制词（系统按钮文字）：清空场景 / 重新规划全交给 scene_agent 处理
+_SCENE_LIFECYCLE_KEYWORDS = ["重新规划", "结束购物"]
+
 _POSITION_RE = re.compile(r"第[一二三四五12345]+(个|款|项|件)?")
 
 # 购买意图词 + 商品指代词组合 → cart_add 快速路由
@@ -518,6 +595,11 @@ def _quick_classify(message: str, current_state: str, has_pending_sku: bool = Fa
 
     if current_state == "checkout":
         return _quick_dict("checkout", {"query": msg})
+
+    # scene 生命周期控制（系统按钮）：交给 scene_agent 自己处理清空与提示
+    # 必须放在 cart/checkout 之前，避免"重新规划"被其他规则误判
+    if any(k in msg for k in _SCENE_LIFECYCLE_KEYWORDS):
+        return _quick_dict("scene", {})
 
     if any(k in msg for k in _CART_VIEW_KEYWORDS):
         return _quick_dict("cart_manage", {"cart_action": "view"})
