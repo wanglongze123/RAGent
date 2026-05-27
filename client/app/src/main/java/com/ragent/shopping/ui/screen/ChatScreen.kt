@@ -48,6 +48,8 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -927,6 +929,15 @@ private fun ProductDetailSheet(
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
 
+            // ── 可滚动内容区（占用除底部按钮外所有空间）──
+            // weight(1f) 配合 verticalScroll：内容超出时可滚动，按钮永远固定在底部不被裁
+            Column(
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+            ) {
+
             // ── Hero 图：全宽满铺，无圆角，底部带柔性渐变 ──
             Box {
                 AsyncImage(
@@ -1077,82 +1088,86 @@ private fun ProductDetailSheet(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         lineHeight = 22.sp,
-                        maxLines = 6,
-                        overflow = TextOverflow.Ellipsis,
                     )
                     Spacer(Modifier.height(24.dp))
                 }
 
-                // ── 操作按钮（大尺寸圆角胶囊形）──
-                val cartTransition = rememberInfiniteTransition(label = "cart_gradient")
-                val cartShift by cartTransition.animateFloat(
-                    initialValue = -400f,
-                    targetValue = 400f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(2000, easing = LinearEasing),
-                        repeatMode = RepeatMode.Restart,
-                    ),
-                    label = "cart_shift",
-                )
-                val cartGradient = Brush.linearGradient(
-                    colors = listOf(BrandIndigo, BrandViolet, BrandSky, BrandIndigo),
-                    start = Offset(cartShift, 0f),
-                    end = Offset(cartShift + 400f, 200f),
-                )
+            }
+            }
+            // ── 可滚动内容区到此结束 ──
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+            // ── 操作按钮（sticky bottom，永远可见）──
+            val cartTransition = rememberInfiniteTransition(label = "cart_gradient")
+            val cartShift by cartTransition.animateFloat(
+                initialValue = -400f,
+                targetValue = 400f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(2000, easing = LinearEasing),
+                    repeatMode = RepeatMode.Restart,
+                ),
+                label = "cart_shift",
+            )
+            val cartGradient = Brush.linearGradient(
+                colors = listOf(BrandIndigo, BrandViolet, BrandSky, BrandIndigo),
+                start = Offset(cartShift, 0f),
+                end = Offset(cartShift + 400f, 200f),
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(horizontal = 24.dp, vertical = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            sheetState.hide()
+                            onDismiss()
+                        }
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(54.dp),
+                    shape = RoundedCornerShape(27.dp),
+                    border = BorderStroke(
+                        1.5.dp,
+                        Brush.linearGradient(listOf(BrandIndigo, BrandViolet)),
+                    ),
                 ) {
-                    OutlinedButton(
-                        onClick = {
-                            scope.launch {
-                                sheetState.hide()
-                                onDismiss()
-                            }
-                        },
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(54.dp),
-                        shape = RoundedCornerShape(27.dp),
-                        border = BorderStroke(
-                            1.5.dp,
-                            Brush.linearGradient(listOf(BrandIndigo, BrandViolet)),
-                        ),
-                    ) {
-                        Text(
-                            "继续看看",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = BrandIndigo,
-                        )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .weight(1.4f)
-                            .height(54.dp)
-                            .clip(RoundedCornerShape(27.dp))
-                            .background(
-                                if (matchedSku != null) cartGradient
-                                else Brush.linearGradient(
-                                    listOf(
-                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
-                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
-                                    )
+                    Text(
+                        "继续看看",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = BrandIndigo,
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .weight(1.4f)
+                        .height(54.dp)
+                        .clip(RoundedCornerShape(27.dp))
+                        .background(
+                            if (matchedSku != null) cartGradient
+                            else Brush.linearGradient(
+                                listOf(
+                                    MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
+                                    MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
                                 )
                             )
-                            .clickable(enabled = matchedSku != null) {
-                                matchedSku?.let { onAddToCart(product.productId, it.skuId) }
-                            },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            "加入购物车",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = if (matchedSku != null) Color.White
-                                    else MaterialTheme.colorScheme.outline,
                         )
-                    }
+                        .clickable(enabled = matchedSku != null) {
+                            matchedSku?.let { onAddToCart(product.productId, it.skuId) }
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "加入购物车",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = if (matchedSku != null) Color.White
+                                else MaterialTheme.colorScheme.outline,
+                    )
                 }
             }
         }
