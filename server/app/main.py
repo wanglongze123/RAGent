@@ -1,6 +1,9 @@
 """
 FastAPI 入口 — 应用启动 / 关闭 / 路由注册 / 静态文件挂载。
 """
+import os
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+
 from contextlib import asynccontextmanager
 from pathlib import Path
 
