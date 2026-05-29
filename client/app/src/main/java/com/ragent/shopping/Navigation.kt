@@ -50,6 +50,8 @@ fun AppNavigation() {
             CartScreen(
                 sessionId = uiState.sessionId,
                 onBack = { navController.popBackStack() },
+                // 购物车页增删改后回传最新数量/金额，保持对话页顶栏角标一致
+                onCartChanged = { count, price -> chatViewModel.setCartBadge(count, price) },
             )
         }
     }

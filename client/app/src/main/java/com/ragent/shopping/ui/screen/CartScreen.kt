@@ -59,6 +59,7 @@ import kotlinx.coroutines.launch
 fun CartScreen(
     sessionId: String,
     onBack: () -> Unit,
+    onCartChanged: (count: Int, price: Double) -> Unit = { _, _ -> },
     viewModel: CartViewModel = viewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -67,6 +68,12 @@ fun CartScreen(
 
     LaunchedEffect(sessionId) {
         viewModel.loadCart(sessionId)
+    }
+
+    // 购物车数量/金额一旦变化（含初次加载、增减、删除），立即回传给对话页同步顶栏角标。
+    // 不在 loading 中途上报，避免把瞬时空状态推给对话页。
+    LaunchedEffect(uiState.totalCount, uiState.totalPrice, uiState.isLoading) {
+        if (!uiState.isLoading) onCartChanged(uiState.totalCount, uiState.totalPrice)
     }
 
     Scaffold(

@@ -149,6 +149,15 @@ class ChatViewModel(
 
     fun clearToast() = _uiState.update { it.copy(toastMessage = "") }
 
+    /**
+     * 同步购物车角标 —— 供购物车页（CartScreen）增删改后回传最新数量/金额。
+     * 购物车页用的是独立的 CartViewModel，对话页顶栏角标读的是这里的 cartBadgeCount，
+     * 不回传就会出现「购物车页删了商品、对话页角标不变」的状态不一致。
+     */
+    fun setCartBadge(count: Int, price: Double) {
+        _uiState.update { it.copy(cartBadgeCount = count, cartTotalPrice = price) }
+    }
+
     // ===== 内部辅助 =====
 
     private fun addStatus(msg: String) {

@@ -915,7 +915,8 @@ private fun ProductDetailSheet(
         mutableStateOf(product.skus.firstOrNull()?.properties ?: emptyMap())
     }
 
-    // 根据当前选择匹配 SKU；找不到完全匹配时降级为第一个 SKU
+    // 当前选择对应的 SKU。selectedProps 永远由"点击时跳转到真实 SKU"维护
+    // （见下方 FilterChip onClick），所以这里总能完全命中；?: 仅作兜底。
     val matchedSku = remember(product, selectedProps) {
         product.skus.firstOrNull { it.properties == selectedProps }
             ?: product.skus.firstOrNull()
@@ -1052,7 +1053,18 @@ private fun ProductDetailSheet(
                                 val selected = selectedProps[key] == v
                                 FilterChip(
                                     selected = selected,
-                                    onClick = { selectedProps = selectedProps + (key to v) },
+                                    onClick = {
+                                        // 切换某一维度时，跳转到「含该值且与当前选择重合最多」的真实 SKU。
+                                        // 这样 selectedProps 始终等于某个真实存在的 SKU 组合，
+                                        // 价格显示与加购都永远正确 —— 修复非完整组合（如手机/笔记本
+                                        // 颜色×存储缺货组合）下「切规格价格回退、加错货」的问题。
+                                        val target = product.skus
+                                            .filter { it.properties[key] == v }
+                                            .maxByOrNull { sku ->
+                                                selectedProps.count { (k, vv) -> sku.properties[k] == vv }
+                                            }
+                                        if (target != null) selectedProps = target.properties
+                                    },
                                     label = {
                                         Text(
                                             v,
