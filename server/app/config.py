@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     doubao_base_url: str = "https://ark.cn-beijing.volces.com/api/v3/"
     doubao_model: str
     doubao_embedding_model: str
+    doubao_vision_model: str = ""
 
     # ===== 运行环境 =====
     environment: str = "development"

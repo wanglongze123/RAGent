@@ -83,6 +83,27 @@ class DoubaoClient:
             results.append(data["data"]["embedding"])
         return results
 
+    async def vlm_chat(
+        self,
+        prompt: str,
+        image_base64: str,
+        mime_type: str = "image/jpeg",
+    ) -> str:
+        """图+文字 → 文字。用于商品图类目识别 + OCR。"""
+        resp = await self._client.chat.completions.create(
+            model=settings.doubao_vision_model,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:{mime_type};base64,{image_base64}"}},
+                ],
+            }],
+            temperature=0.0,
+        )
+        return resp.choices[0].message.content or ""
+
     async def embed_image(self, image_base64: str, mime_type: str = "image/jpeg") -> list[float]:
         """
         图片向量化 — 使用 Doubao-embedding-vision 多模态接口。

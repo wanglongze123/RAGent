@@ -12,11 +12,14 @@ Search Agent — 商品搜索与推荐。
 """
 import json as _json
 import re as _re
+import sys
+import traceback
 from typing import AsyncIterator
 
 from app.agent.middleware import middleware
 from app.db import relational as db
 from app.db.product_repo import product_repo
+from app.llm.client import llm_client
 from app.models import events as ev
 from app.rag.hybrid_retriever import hybrid_retriever
 
@@ -333,6 +336,46 @@ class SearchAgent:
 
         if image_base64:
             yield ev.image_searching("正在分析图片…").to_sse()
+
+            # VLM 预处理：识别类目 + OCR（并行跑，出错不阻断主流程）
+            vlm_category, vlm_ocr = None, ""
+            try:
+                vlm_result = await llm_client.vlm_chat(
+                    prompt=(
+                        "请分析这张商品图，返回 JSON，字段：\n"
+                        "1. category: 商品所属类目，只能从以下选项选一个："
+                        "「美妆护肤」「数码电子」「服饰运动」「食品生活」，不确定填 null\n"
+                        "2. ocr_text: 图中所有可见文字（品牌名、型号、产品名等），没有文字填空字符串\n"
+                        "只返回 JSON，不要解释。示例：{\"category\":\"数码电子\",\"ocr_text\":\"iPhone 15 Pro\"}"
+                    ),
+                    image_base64=image_base64,
+                )
+                # 兼容 VLM 返回带 markdown 代码块的情况
+                raw = vlm_result.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+                parsed = _json.loads(raw)
+                vlm_category = parsed.get("category") or None
+                vlm_ocr = (parsed.get("ocr_text") or "").strip()
+                print(f"[vlm] category={vlm_category} ocr={vlm_ocr!r}", flush=True, file=sys.stderr)
+            except Exception as e:
+                print(f"[vlm] 预处理失败（降级为纯向量召回）: {e}", flush=True, file=sys.stderr)
+                traceback.print_exc(file=sys.stderr)
+
+            # 类目 → 注入 chroma where 过滤
+            _CATEGORY_MAP = {
+                "美妆护肤": "美妆护肤",
+                "数码电子": "数码电子",
+                "服饰运动": "服饰运动",
+                "食品生活": "食品生活",
+            }
+            if vlm_category and vlm_category in _CATEGORY_MAP:
+                where = {**(where or {}), "category": vlm_category}
+
+            # OCR 文字 → 补充到 query（让后续 LLM judge 能看到品牌/型号）
+            if vlm_ocr and not query:
+                query = vlm_ocr
+            elif vlm_ocr and query:
+                query = f"{query} {vlm_ocr}"
+
             try:
                 ranked = await hybrid_retriever.retrieve_by_image(
                     image_base64=image_base64, top_k=fetch_k, where=where,
