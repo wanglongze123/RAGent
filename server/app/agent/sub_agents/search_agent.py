@@ -1,21 +1,27 @@
 """
-Search Agent — 商品搜索与推荐。
+Search Agent — 商品搜索与推荐（引导式 slot-filling 多轮收敛）。
 
-流程：
-  Step 1: 解析结构化参数（价格区间、品牌排除、属性排除）
-          特殊：query 含"都不是"时直接输出精化引导，不做检索
-  Step 2: 检索候选（图搜 / 文本检索）
-  Step 3: 硬过滤（品牌排除、属性排除）
-  Step 4: LLM 裁判 — 从候选中选出真正相关的 product_id（最多3个）
-  Step 5: 推商品卡片
-  Step 6: 一句话引导 + 商品选择框（用户点击后进入 product_inquiry 查看详情）
+核心模型（重构后）：
+  累积结构化 SearchState（持久化 session.search_state）
+    → 每轮把用户输入合并进 SearchState（标量覆盖 / 列表累积 / 反选）
+    → 用「完整 SearchState」每轮全量重新检索（不在旧结果里捞 —— 数据仅 100 商品，重检成本可忽略）
+    → 「该问才问」：需求欠定时 Agent 顺着该品类的关键维度(slot)清单主动反问，
+       每填一个维度候选可见收窄（"还剩 N 款"），直到收敛(≤3 / 无可区分维度 / 用户喊停)才出卡
+    → 推荐后仍可继续：加约束重检索 / "换一批" / "不满意"反开调整方向 / 换品类重置
+
+SearchState（存 sessions.search_state）：
+  {category, price_min, price_max, include_brands[], exclude_brands[],
+   exclude_attrs[], want_attrs[], asked_slots[], shown_ids[], pending{}}
+  pending = 上一轮反问的 slot 上下文 {slot, kind, options}，用于把用户的「答复」确定性地
+  解释成对应约束（按钮点击发回的就是选项文本），不依赖 master LLM 二次解析；用户若答非所问
+  则 pending 失效、按正常输入处理 —— 反问可中断、不锁死用户。
 """
 import asyncio
 import json as _json
 import re as _re
 import sys
 import traceback
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 
 from app.agent.middleware import middleware
 from app.db import relational as db
@@ -25,10 +31,15 @@ from app.models import events as ev
 from app.rag.hybrid_retriever import hybrid_retriever
 
 
+_FETCH_K = 12          # 每轮召回上限（sub_category 最多约 12 个，足够覆盖）
+_RECOMMEND_AT = 2      # 候选收敛到 ≤ 此值即直接出卡，不再反问
+_SHOW_TOP = 3          # 一次展示的商品数
+
+
 class SearchAgent:
 
     # ─────────────────────────────────────────────────────────
-    # 主入口：分发到各子流程
+    # 主入口
     # ─────────────────────────────────────────────────────────
 
     async def run(
@@ -40,533 +51,708 @@ class SearchAgent:
         image_base64: str | None = None,
     ) -> AsyncIterator[str]:
 
-        order_info = dict(session.get("order_state") or {})
+        state = dict(session.get("search_state") or {})
+        msg = (message or "").strip()
 
-        # ── 模式1：问卷进行中（master 已路由） ──────────────
-        if params.get("questionnaire_reply") is not None:
-            async for e in self._handle_questionnaire_reply(
-                session_id, params["questionnaire_reply"], order_info, session
-            ):
-                yield e
-            return
-
-        query = params.get("query") or message
-
-        # ── 模式2：用户要细化当前结果 ───────────────────────
-        if "细化需求" in query:
-            last_q = order_info.get("last_search_query", "")
-            hint   = _get_category_hint(last_q) if last_q else "如：价格范围、品牌、功能需求"
-            yield ev.text_delta(
-                f"好的！请告诉我想在哪方面调整，例如：\n· {hint}\n"
-                "我会结合之前的搜索条件重新推荐。"
-            ).to_sse()
-            return
-
-        # ── 模式3：重新搜索 / 都不是 ────────────────────────
-        if "重新搜索" in query or "都不是" in query:
-            order_info.pop("last_search_query", None)
-            order_info.pop("last_search_brands", None)   # 清除图片搜索的品牌缓存
-            order_info.pop("search_questionnaire", None)
-            await db.update_order_state(session_id, order_info)
-            # 同时清空已展示商品，让下次模糊查询重新触发问卷
+        # ── 重置：重新搜索 / 都不是 ───────────────────────────
+        if "重新搜索" in msg or "都不是" in msg:
+            await db.clear_search_state(session_id)
             await db.update_session_state(session_id, last_shown_products=[])
             yield ev.text_delta(
-                "好的！请告诉我您想搜索的新商品，也可以发一张图片帮我理解。"
+                "好的！请告诉我您想找什么商品，也可以发一张图片帮我理解。"
             ).to_sse()
             return
 
-        # ── 模式4：模糊文字查询，先走问卷 ─────────────────────
-        if params.get("_needs_questionnaire"):
-            async for e in self._start_questionnaire(session_id, query, order_info):
+        # ── 图搜：一次性视觉检索，并把品类写入 SearchState ──────
+        if image_base64:
+            async for e in self._do_image(session_id, msg, state, image_base64):
                 yield e
             return
 
-        price_max   = params.get("price_max")
-        price_min   = params.get("price_min")
-        incl_brands = params.get("include_brands", [])
-        excl_brands = params.get("exclude_brands", [])
-        excl_attrs  = params.get("exclude_attrs", [])
-
-        # ── 模式5：在已有候选集内细化（有上下文 + 非图搜）────
-        # 原则：初次召回是"撒网"，后续细化是"在网里捞"
-        # 避免因细化条件重新发散检索导致上下文丢失
-        last_shown = session.get("last_shown_products", [])
-        if last_shown and not image_base64 and not params.get("scene_topic"):
-            async for e in self._refine_in_candidates(
-                session_id, last_shown, query, price_max, price_min,
-                incl_brands, excl_brands, session, order_info,
-            ):
+        # ── "换一批"：在当前约束的候选里出未展示过的后几名 ─────
+        if state.get("category") and any(k in msg for k in _BATCH_WORDS):
+            async for e in self._next_batch(session_id, state):
                 yield e
             return
 
-        # ── 模式6：全量向量检索（首次搜索 / 图搜）────────────
-        async for e in self._do_search(
-            session_id, query, price_max, price_min,
-            incl_brands, excl_brands, excl_attrs, session, image_base64, order_info,
-        ):
+        # ── 纯"不满意"（无新信息）：反开"调整方向"反问 ──────────
+        if state.get("category") and any(k in msg for k in _DISSATISFY_WORDS):
+            yield ev.text_delta("这些不太合适呀，想从哪方面调整一下？").to_sse()
+            yield ev.clarification(
+                question="选一个方向，我帮您重新找：",
+                options=["换一批", "再便宜点", "重新搜索"],
+            ).to_sse()
+            return
+
+        # ── 放宽约束按钮（0 结果时给出）───────────────────────
+        if state.get("category") and msg in ("放宽预算", "不限品牌", "再便宜点"):
+            state = _apply_adjustment(state, msg, await self._candidates(state))
+            state["pending"] = {}
+
+        else:
+            # ── 处理上一轮反问的答复 / 正常合并 ──────────────────
+            pending = state.get("pending") or {}
+            if pending and any(w in msg for w in _SHOW_NOW_WORDS):
+                # 用户喊停 → 默认值逻辑：不再追问，直接用当前约束出卡
+                state["pending"] = {}
+                await db.update_search_state(session_id, state)
+                async for e in self._recommend(session_id, state):
+                    yield e
+                return
+            if pending and _is_slot_answer(msg, pending):
+                state = _apply_slot_answer(state, pending, msg)
+                state["pending"] = {}
+            else:
+                # 答非所问 / 首轮 / 主动细化 → pending 失效，走正常 patch 合并
+                old_price = (state.get("price_min"), state.get("price_max"))
+                state["pending"] = {}
+                state = _merge_search_state(state, params, msg)
+                # 改主意感知：价格被覆盖时回显
+                new_price = (state.get("price_min"), state.get("price_max"))
+                if old_price != new_price and any(p is not None for p in old_price):
+                    hint = _price_phrase(state)
+                    if hint:
+                        yield ev.text_delta(f"好的，已将价格调整为{hint}。").to_sse()
+
+        if not state.get("category"):
+            # 没有任何可检索的品类线索 → 引导用户给出
+            await db.clear_search_state(session_id)
+            yield ev.text_delta(
+                "想找点什么呢？告诉我商品类型（如「面霜」「跑步鞋」「笔记本」），"
+                "我来帮您挑～"
+            ).to_sse()
+            return
+
+        await db.update_search_state(session_id, state)
+
+        # ── 用户主动喊停（非 pending 场景）→ 直接出卡 ──────────
+        if any(w in msg for w in _SHOW_NOW_WORDS):
+            async for e in self._recommend(session_id, state):
+                yield e
+            return
+
+        # ── 全量重检索 → 决策（反问 or 出卡）──────────────────
+        async for e in self._search_and_decide(session_id, state):
             yield e
 
     # ─────────────────────────────────────────────────────────
-    # 在已有候选集内细化
+    # 检索 + 决策：反问下一个维度 or 出卡
     # ─────────────────────────────────────────────────────────
 
-    async def _refine_in_candidates(
-        self,
-        session_id: str,
-        last_shown: list[dict],
-        query: str,
-        price_max,
-        price_min,
-        incl_brands: list,
-        excl_brands: list,
-        session: dict,
-        order_info: dict,
+    async def _search_and_decide(
+        self, session_id: str, state: dict
     ) -> AsyncIterator[str]:
-        """
-        在已展示商品中过滤细化，不重新向量检索。
-        硬过滤（价格/品牌）→ 语义重排（非结构化属性如尺寸/功能）→ 空则报告没有。
-        """
-        # 图片搜索的品牌上下文：自动注入保存的品牌
-        if not incl_brands:
-            saved_brands = order_info.get("last_search_brands", [])
-            if saved_brands:
-                incl_brands = saved_brands
-
-        shown_ids = [p["product_id"] for p in last_shown]
-
-        # ── Step 1：硬过滤（价格 + 品牌）─────────────────────
-        hard_filtered: list = []
-        for pid in shown_ids:
-            product = product_repo.get(pid)
-            if not product:
-                continue
-            min_price = min((s.price for s in product.skus), default=product.base_price)
-            if price_max is not None and min_price > price_max:
-                continue
-            if price_min is not None and min_price < price_min:
-                continue
-            if incl_brands and not any(b in product.brand for b in incl_brands):
-                continue
-            if excl_brands and any(b in product.brand for b in excl_brands):
-                continue
-            hard_filtered.append(product)
-
-        if not hard_filtered:
-            yield ev.text_delta(
-                "当前搜索结果中没有符合条件的商品。"
-            ).to_sse()
-            yield ev.clarification(
-                question="您可以：",
-                options=["重新搜索"],
-            ).to_sse()
+        yield ev.tool_progress("hybrid_search", "正在为您检索商品…").to_sse()
+        try:
+            ranked = await self._candidates(state)
+        except Exception as ex:
+            print(f"[search_agent] 检索异常: {ex}")
+            traceback.print_exc(file=sys.stderr)
+            yield ev.text_delta("抱歉，搜索时遇到了问题，请稍后重试。").to_sse()
             return
 
-        # ── Step 2：属性过滤（从 query 中解析尺寸/容量等数值约束）────────
-        # 完全在 Python 层做，通过 title + SKU 属性的字符串匹配实现精确过滤
-        effective_query = query or order_info.get("last_search_query", "")
-        final_products = _filter_by_numeric_attr(hard_filtered, effective_query)
+        # 0 结果 → 放宽建议（而非干巴巴"没有"）
+        if not ranked:
+            async for e in self._relax(state):
+                yield e
+            return
 
-        # ── Step 3：更新上下文并推送结果 ─────────────────────
-        if effective_query:
-            order_info["last_search_query"] = effective_query
-            await db.update_order_state(session_id, order_info)
+        cand_products = _cand_products(ranked)
+        n = len(cand_products)
 
-        filtered_count = len(final_products)
-        original_count = len(shown_ids)
-        intro = (
-            f"为您筛选出 {filtered_count} 款符合条件的商品："
-            if filtered_count < original_count
-            else "根据您的需求，为您推荐以下商品："
+        # 决策：候选够少 / 没有可区分维度可问 → 出卡；否则反问
+        slot = None
+        if n > _RECOMMEND_AT:
+            slot = _next_slot_to_ask(state, cand_products)
+
+        if slot is None:
+            async for e in self._recommend(session_id, state, ranked=ranked):
+                yield e
+            return
+
+        # ── 反问该维度（追问轮：不堆卡，只显示收窄进度 + 选择框）──
+        is_first_ask = not state.get("asked_slots")
+        echo = (
+            f"为您找到 {n} 款{_state_label(state)}，先帮您缩小范围～"
+            if is_first_ask else
+            f"符合的还剩 {n} 款，再确认一点～"
         )
-        yield ev.text_delta(intro).to_sse()
+        yield ev.text_delta(echo).to_sse()
+
+        options = slot["options"] + ["先看看"]
+        state.setdefault("asked_slots", []).append(slot["name"])
+        state["pending"] = {"slot": slot["name"], "kind": slot["kind"], "options": slot["options"]}
+        await db.update_search_state(session_id, state)
+
+        yield ev.clarification(question=slot["question"], options=options).to_sse()
+
+    # ─────────────────────────────────────────────────────────
+    # 出卡（收敛末轮）
+    # ─────────────────────────────────────────────────────────
+
+    async def _recommend(
+        self,
+        session_id: str,
+        state: dict,
+        ranked: Optional[list] = None,
+    ) -> AsyncIterator[str]:
+        if ranked is None:
+            ranked = await self._candidates(state)
+        if not ranked:
+            async for e in self._relax(state):
+                yield e
+            return
+
+        # LLM 裁判从候选里选最匹配的（最多 3 个），失败降级 top-3
+        text_constraint = _build_query_from_state(state)
+        yield ev.tool_progress("llm_judge", "正在筛选最匹配的商品…").to_sse()
+        selected_ids = await _llm_judge(text_constraint, ranked, is_image_search=False)
+        if selected_ids:
+            order = {pid: i for i, pid in enumerate(selected_ids)}
+            ranked = sorted(
+                [r for r in ranked if r["product_id"] in order],
+                key=lambda r: order[r["product_id"]],
+            )
+        ranked = ranked[:_SHOW_TOP]
+
+        shown = [p for rp in ranked if (p := product_repo.get(rp["product_id"]))]
+        if not shown:
+            yield ev.text_delta("抱歉，商品信息暂时无法获取。").to_sse()
+            return
+
+        state["shown_ids"] = [p.product_id for p in shown]
+        await db.update_search_state(session_id, state)
+
+        echo = _state_label(state)
+        yield ev.text_delta(
+            f"已按您的需求（{echo}）筛选，为您推荐："
+            if echo else "根据您的需求，为您推荐以下商品："
+        ).to_sse()
 
         yield ev.product_card_list(
             products=[
                 {"product_id": p.product_id, "title": p.display_title,
                  "brand": p.brand, "image_url": p.image_url,
                  "price": p.base_price, "sub_category": p.sub_category}
-                for p in final_products
+                for p in shown
             ],
             search_type="text",
         ).to_sse()
 
-        first_opt = "加入购物车" if len(final_products) == 1 else "对比这几款"
+        first_opt = "加入购物车" if len(shown) == 1 else "对比这几款"
         yield ev.clarification(
             question="点击商品卡片可查看详情和选择规格，或：",
-            options=[first_opt, "细化需求", "重新搜索"],
+            options=[first_opt, "换一批", "重新搜索"],
         ).to_sse()
 
     # ─────────────────────────────────────────────────────────
-    # 问卷：启动
+    # 换一批：出候选里未展示过的后几名
     # ─────────────────────────────────────────────────────────
 
-    async def _start_questionnaire(
-        self, session_id: str, original_query: str, order_info: dict
-    ) -> AsyncIterator[str]:
-        order_info["search_questionnaire"] = {
-            "original_query": original_query,
-        }
-        await db.update_order_state(session_id, order_info)
-        hint = _get_category_hint(original_query)
+    async def _next_batch(self, session_id: str, state: dict) -> AsyncIterator[str]:
+        ranked = await self._candidates(state)
+        shown_ids = set(state.get("shown_ids") or [])
+        rest = [rp for rp in ranked if rp["product_id"] not in shown_ids]
+        if not rest:
+            yield ev.text_delta("已经把符合条件的商品都展示给您啦。要不要放宽一下条件？").to_sse()
+            yield ev.clarification(
+                question="选一个方向：",
+                options=["放宽预算", "不限品牌", "重新搜索"],
+            ).to_sse()
+            return
+
+        batch = rest[:_SHOW_TOP]
+        shown = [p for rp in batch if (p := product_repo.get(rp["product_id"]))]
+        state["shown_ids"] = list(shown_ids) + [p.product_id for p in shown]
+        await db.update_search_state(session_id, state)
+
+        yield ev.text_delta("为您换一批其他符合条件的商品：").to_sse()
+        yield ev.product_card_list(
+            products=[
+                {"product_id": p.product_id, "title": p.display_title,
+                 "brand": p.brand, "image_url": p.image_url,
+                 "price": p.base_price, "sub_category": p.sub_category}
+                for p in shown
+            ],
+            search_type="text",
+        ).to_sse()
+        first_opt = "加入购物车" if len(shown) == 1 else "对比这几款"
         yield ev.clarification(
-            question=f"帮您搜索「{original_query}」！有什么特别要求吗？\n（{hint}，也可直接跳过）",
-            options=["直接搜索"],
+            question="点击商品卡片可查看详情，或：",
+            options=[first_opt, "换一批", "重新搜索"],
         ).to_sse()
 
     # ─────────────────────────────────────────────────────────
-    # 问卷：处理每一步回复
+    # 0 结果 → 放宽建议
     # ─────────────────────────────────────────────────────────
 
-    async def _handle_questionnaire_reply(
-        self,
-        session_id: str,
-        message: str,
-        order_info: dict,
-        session: dict,
-    ) -> AsyncIterator[str]:
-
-        questionnaire = order_info.get("search_questionnaire", {})
-        original      = questionnaire.get("original_query", message)
-
-        # 取消问卷
-        if any(kw in message for kw in ("算了", "取消", "不买了", "退出")):
-            order_info.pop("search_questionnaire", None)
-            await db.update_order_state(session_id, order_info)
-            yield ev.text_delta("好的，已退出搜索。有需要随时告诉我！").to_sse()
-            return
-
-        # 问卷只有一步，收到回复即清除状态
-        order_info.pop("search_questionnaire", None)
-        await db.update_order_state(session_id, order_info)
-
-        if message == "直接搜索":
-            async for e in self._do_search(
-                session_id, original, None, None, [], [], [], session, None, order_info,
-            ):
-                yield e
-            return
-
-        # 从自由文本中提取价格约束
-        pmin, pmax = _parse_price_option(message)
-
-        # 从自由文本中提取品牌偏好，并拼入 query（硬过滤 incl_brands 留空，用 query 语义召回）
-        brand_prefix = ""
-        if "国产" in message:
-            brand_prefix = "国产"
-        elif any(kw in message for kw in ("国际", "大牌", "进口")):
-            brand_prefix = "国际大牌"
-
-        # 剩余部分作为额外需求修饰词（去掉价格和品牌关键词后的内容）
-        extra = _re.sub(
-            r"\d+(?:\.\d+)?\s*(?:元以内|元以下|以内|以下|元以上|以上)"
-            r"|\d+(?:\.\d+)?\s*[-~～到]\s*\d+(?:\.\d+)?\s*元?"
-            r"|国产品牌?|国际大牌?|大牌|进口品牌?|不限品牌?"
-            r"|[，,、。.]+",
-            " ", message,
-        ).strip()
-
-        combined_query = original
-        if extra:
-            combined_query = f"{extra} {combined_query}"
-        if brand_prefix:
-            combined_query = f"{brand_prefix} {combined_query}"
-
-        async for e in self._do_search(
-            session_id, combined_query, pmax, pmin, [], [], [], session, None, order_info,
-        ):
-            yield e
+    async def _relax(self, state: dict) -> AsyncIterator[str]:
+        opts: list[str] = []
+        reason = "当前条件有点严"
+        if state.get("price_max") is not None or state.get("price_min") is not None:
+            opts.append("放宽预算")
+            reason = "可能是预算范围太窄"
+        if state.get("include_brands"):
+            opts.append("不限品牌")
+        opts.append("重新搜索")
+        yield ev.text_delta(
+            f"没找到完全符合的商品，{reason}。要不要放宽一下条件？"
+        ).to_sse()
+        yield ev.clarification(question="可以这样调整：", options=opts).to_sse()
 
     # ─────────────────────────────────────────────────────────
-    # 核心检索逻辑（原 run() Steps 2-6）
+    # 图搜：视觉检索 + 写入 SearchState.category
     # ─────────────────────────────────────────────────────────
 
-    async def _do_search(
-        self,
-        session_id: str,
-        query: str,
-        price_max,
-        price_min,
-        incl_brands: list,
-        excl_brands: list,
-        excl_attrs: list,
-        session: dict,
-        image_base64: str | None,
-        order_info: dict,
+    async def _do_image(
+        self, session_id: str, query: str, state: dict, image_base64: str
     ) -> AsyncIterator[str]:
-        try:
-            async for e in self._do_search_inner(
-                session_id, query, price_max, price_min,
-                incl_brands, excl_brands, excl_attrs,
-                session, image_base64, order_info,
-            ):
-                yield e
-        except Exception as ex:
-            print(f"[search_agent] _do_search 未捕获异常: {ex}")
-            yield ev.text_delta("抱歉，搜索时遇到了问题，请稍后重试。").to_sse()
+        yield ev.image_searching("正在分析图片…").to_sse()
+        where = _build_price_filter(state.get("price_max"), state.get("price_min"))
 
-    async def _do_search_inner(
-        self,
-        session_id: str,
-        query: str,
-        price_max,
-        price_min,
-        incl_brands: list,
-        excl_brands: list,
-        excl_attrs: list,
-        session: dict,
-        image_base64: str | None,
-        order_info: dict,
-    ) -> AsyncIterator[str]:
+        async def _vlm_preprocess():
+            try:
+                vlm_result = await llm_client.vlm_chat(
+                    prompt=(
+                        "请分析这张商品图，返回 JSON，字段：\n"
+                        "1. category: 商品所属类目，只能从以下选项选一个："
+                        "「美妆护肤」「数码电子」「服饰运动」「食品生活」，不确定填 null\n"
+                        "2. ocr_text: 图中所有可见文字（品牌名、型号、产品名等），没有文字填空字符串\n"
+                        "只返回 JSON，不要解释。示例：{\"category\":\"数码电子\",\"ocr_text\":\"iPhone 15 Pro\"}"
+                    ),
+                    image_base64=image_base64,
+                )
+                raw = vlm_result.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+                parsed = _json.loads(raw)
+                return (parsed.get("category") or None), (parsed.get("ocr_text") or "").strip()
+            except Exception as e:
+                print(f"[vlm] 预处理失败（降级）: {e}", flush=True, file=sys.stderr)
+                return None, ""
 
-        # 文字细化时，若 LLM 没能从图片上下文提取到真实商品名（产生"图片相似款"等占位词），
-        # 直接用服务端保存的上下文替换，绕过 LLM 推断：
-        #   1. query 回填为 last_search_query（sub_category）
-        #   2. include_brands 注入 last_search_brands（图片搜索时的品牌）
-        if not image_base64 and (not query or "图片" in query):
-            fallback_query = order_info.get("last_search_query", "")
-            if fallback_query:
-                query = fallback_query
-        # 图片搜索的品牌上下文：如果本次没有指定品牌过滤，且上次是图片搜索，自动沿用品牌
-        if not image_base64 and not incl_brands:
-            saved_brands = order_info.get("last_search_brands", [])
-            if saved_brands:
-                incl_brands = saved_brands
+        (vlm_category, vlm_ocr), ranked = await asyncio.gather(
+            _vlm_preprocess(),
+            hybrid_retriever.retrieve_by_image(image_base64=image_base64, top_k=_FETCH_K, where=where),
+        )
 
-        where   = _build_price_filter(price_max, price_min)
-        fetch_k = 10
-
-        if image_base64:
-            yield ev.image_searching("正在分析图片…").to_sse()
-
-            # VLM 预处理 + 向量召回并行，互不等待
-            async def _vlm_preprocess():
-                try:
-                    vlm_result = await llm_client.vlm_chat(
-                        prompt=(
-                            "请分析这张商品图，返回 JSON，字段：\n"
-                            "1. category: 商品所属类目，只能从以下选项选一个："
-                            "「美妆护肤」「数码电子」「服饰运动」「食品生活」，不确定填 null\n"
-                            "2. ocr_text: 图中所有可见文字（品牌名、型号、产品名等），没有文字填空字符串\n"
-                            "只返回 JSON，不要解释。示例：{\"category\":\"数码电子\",\"ocr_text\":\"iPhone 15 Pro\"}"
-                        ),
-                        image_base64=image_base64,
-                    )
-                    raw = vlm_result.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-                    parsed = _json.loads(raw)
-                    cat = parsed.get("category") or None
-                    ocr = (parsed.get("ocr_text") or "").strip()
-                    print(f"[vlm] category={cat} ocr={ocr!r}", flush=True, file=sys.stderr)
-                    return cat, ocr
-                except Exception as e:
-                    print(f"[vlm] 预处理失败（降级）: {e}", flush=True, file=sys.stderr)
-                    traceback.print_exc(file=sys.stderr)
-                    return None, ""
-
-            # 并行：VLM 理解图片 + 向量召回同时跑
-            (vlm_category, vlm_ocr), ranked = await asyncio.gather(
-                _vlm_preprocess(),
-                hybrid_retriever.retrieve_by_image(
-                    image_base64=image_base64, top_k=fetch_k, where=where,
-                ),
-            )
-
-            # VLM 结果：对召回结果做后过滤 + 增强 query
-            _VALID_CATEGORIES = {"美妆护肤", "数码电子", "服饰运动", "食品生活"}
-            if vlm_category and vlm_category in _VALID_CATEGORIES:
-                ranked = [r for r in ranked if r.get("metadata", {}).get("category") == vlm_category]
-            # OCR 只在用户主动输入了文字时才拼入 query
-            # 纯图搜（query 为空）保持 query=None，让 llm_judge 走快速路径（跳过 LLM）
-            if vlm_ocr and query:
-                query = f"{query} {vlm_ocr}"
-
-            if not ranked:
-                # 类目过滤后为空 → 降级回全局召回（不让类目误判断送空结果）
-                print(f"[vlm] 类目过滤后为空，降级回全局召回", flush=True, file=sys.stderr)
-                try:
-                    ranked = await hybrid_retriever.retrieve_by_image(
-                        image_base64=image_base64, top_k=fetch_k, where=_build_price_filter(price_max, price_min),
-                    )
-                except Exception as e:
-                    yield ev.text_delta(f"图片识别失败：{e}").to_sse()
-                    return
-        else:
-            yield ev.tool_progress("hybrid_search", "正在为您检索相关商品...").to_sse()
-            ranked = await hybrid_retriever.retrieve_products(
-                query=query, top_k_chunks=fetch_k * 3, top_k_products=fetch_k, where=where,
-            )
+        _VALID = {"美妆护肤", "数码电子", "服饰运动", "食品生活"}
+        if vlm_category and vlm_category in _VALID:
+            filtered = [r for r in ranked if r.get("metadata", {}).get("category") == vlm_category]
+            ranked = filtered or ranked
+        if vlm_ocr and query:
+            query = f"{query} {vlm_ocr}"
 
         if not ranked:
-            yield ev.text_delta("抱歉，暂时没有找到合适的商品，您可以调整一下条件试试。").to_sse()
+            yield ev.text_delta("抱歉，没能从图片里识别出匹配的商品，换张图或用文字描述试试？").to_sse()
             return
 
-        if incl_brands:
-            ranked = _filter_include_brands(ranked, incl_brands)
-        if excl_brands:
-            ranked = _filter_brands(ranked, excl_brands)
-        if excl_attrs and not image_base64:
-            ranked = _filter_attrs(ranked, excl_attrs)
-
-        if not ranked:
-            yield ev.text_delta("根据您的筛选条件，暂时没有找到合适的商品。").to_sse()
-            return
-
-        if image_base64:
-            text_constraint = None if (not query or any(w in query for w in _IMAGE_REF_WORDS)) else query
-        else:
-            text_constraint = query
-
+        text_constraint = None if (not query or any(w in query for w in _IMAGE_REF_WORDS)) else query
         yield ev.tool_progress("llm_judge", "正在筛选最匹配的商品…").to_sse()
-        selected_ids = await _llm_judge(text_constraint, ranked, is_image_search=bool(image_base64))
-
+        selected_ids = await _llm_judge(text_constraint, ranked, is_image_search=True)
         if selected_ids:
-            id_order = {pid: i for i, pid in enumerate(selected_ids)}
-            ranked = sorted(
-                [r for r in ranked if r["product_id"] in id_order],
-                key=lambda r: id_order[r["product_id"]],
-            )
+            order = {pid: i for i, pid in enumerate(selected_ids)}
+            ranked = sorted([r for r in ranked if r["product_id"] in order], key=lambda r: order[r["product_id"]])
         else:
-            ranked = ranked[:3]
+            ranked = ranked[:2]
 
-        shown_products = [p for rp in ranked if (p := product_repo.get(rp["product_id"]))]
-        if not shown_products:
+        shown = [p for rp in ranked if (p := product_repo.get(rp["product_id"]))]
+        if not shown:
             yield ev.text_delta("抱歉，商品信息暂时无法获取。").to_sse()
             return
 
-        # 图搜的相似度分数（score = 1 - 余弦距离，∈[0,1]），供客户端展示"匹配度"标签
         score_map = {rp["product_id"]: rp.get("score", 0.0) for rp in ranked}
 
-        # 保存本次搜索上下文，供后续细化时复用（绕过 LLM 重推断）
-        context_to_save = query if query else (
-            shown_products[0].sub_category if shown_products else ""
-        )
-        if context_to_save:
-            order_info["last_search_query"] = context_to_save
-        # 图片搜索时额外保存品牌列表（LLM 看不到图片，细化时无法自动恢复品牌）
-        if image_base64 and shown_products:
-            unique_brands = list(dict.fromkeys(p.brand for p in shown_products))
-            order_info["last_search_brands"] = unique_brands
-        elif not image_base64:
-            # 文字搜索时清除旧的图片品牌缓存，避免错误继承
-            order_info.pop("last_search_brands", None)
-        await db.update_order_state(session_id, order_info)
+        # 图搜结果写入 SearchState：品类来自结果（不锁品牌，便于后续"换个牌子"细化）
+        new_state = {"category": shown[0].sub_category, "shown_ids": [p.product_id for p in shown]}
+        await db.update_search_state(session_id, new_state)
 
-        intro = "根据您上传的图片，为您找到以下相似款：" if image_base64 else "根据您的需求，为您推荐以下商品："
-        yield ev.text_delta(intro).to_sse()
-
+        yield ev.text_delta("根据您上传的图片，为您找到以下相似款：").to_sse()
         yield ev.product_card_list(
             products=[
                 {"product_id": p.product_id, "title": p.display_title,
                  "brand": p.brand, "image_url": p.image_url,
                  "price": p.base_price, "sub_category": p.sub_category,
-                 # 仅图搜带匹配度（保留 4 位小数），文字搜索不带此字段
-                 **({"similarity_score": round(score_map.get(p.product_id, 0.0), 4)}
-                    if image_base64 else {})}
-                for p in shown_products
+                 "similarity_score": round(score_map.get(p.product_id, 0.0), 4)}
+                for p in shown
             ],
-            search_type="image" if image_base64 else "text",
+            search_type="image",
         ).to_sse()
-
-        first_opt = "加入购物车" if len(shown_products) == 1 else "对比这几款"
+        first_opt = "加入购物车" if len(shown) == 1 else "对比这几款"
         yield ev.clarification(
-            question="点击商品卡片可查看详情和选择规格，或：",
-            options=[first_opt, "细化需求", "重新搜索"],
+            question="点击商品卡片可查看详情，或：",
+            options=[first_opt, "换一批", "重新搜索"],
         ).to_sse()
 
+    # ─────────────────────────────────────────────────────────
+    # 全量重检索：用完整 SearchState 召回 + 硬过滤（每轮撒网）
+    # ─────────────────────────────────────────────────────────
 
-# ─────────────────────────────────────────────────────────
-# 问卷辅助函数
-# ─────────────────────────────────────────────────────────
-
-# (正则, 提示文字, 快捷选项列表)
-_CATEGORY_HINTS: list[tuple[str, str, list]] = [
-    (r"跑鞋|运动鞋|球鞋|跑步",      "如：轻量、防水、缓震",        ["防水", "轻量", "缓震"]),
-    (r"面霜|精华|护肤|乳液|化妆品",  "如：补水、美白、适合敏感肌",  ["补水保湿", "美白淡斑", "适合敏感肌"]),
-    (r"饮料|矿泉水|茶|咖啡|汽水",    "如：无糖、小瓶、整箱",        ["无糖低卡", "小瓶装", "整箱购买"]),
-    (r"裤子|上衣|外套|衬衫|T恤|服装","如：宽松、修身、速干",        ["宽松舒适", "修身显瘦", "速干防风"]),
-    (r"洗面奶|洁面",                "如：控油、温和、敏感肌",       ["控油清洁", "温和不刺激", "适合敏感肌"]),
-    (r"笔记本|电脑|平板",            "如：轻薄、大屏、长续航",       ["轻薄便携", "大屏", "长续航"]),
-    (r"手机",                       "如：拍照、大电池、轻薄",       ["拍照性能好", "大电池", "轻薄"]),
-]
-
-
-def _filter_by_numeric_attr(products: list, query: str) -> list:
-    """
-    从 query 中解析数值属性约束，在候选集里精确过滤。
-    支持：X英寸以上/以下、X克以内、XGB以上 等模式。
-    匹配商品 title + SKU 属性值中的数字。
-    找不到约束或商品无对应属性时，不过滤（返回原列表）。
-    """
-    import re as _re2
-
-    # 解析约束：(数值, 单位, 方向)，如 (13, "英寸", "上") 或 (100, "g", "下")
-    _UNITS = r"英寸|寸|克|g|G|kg|KG|GB|MB|ml|mL|升|L"
-    m = _re2.search(
-        rf"(\d+(?:\.\d+)?)\s*({_UNITS})\s*(以上|及以上|以下|以内|以下)",
-        query,
-    )
-    if not m:
-        return products  # 没有数值约束，不过滤
-
-    threshold = float(m.group(1))
-    unit = m.group(2)
-    direction = m.group(3)  # "以上"/"及以上" 或 "以下"/"以内"
-    is_min = "上" in direction  # True = 大于等于，False = 小于等于
-
-    filtered = []
-    for product in products:
-        # 收集商品所有包含该单位的数值
-        search_text = product.title + " " + " ".join(
-            str(v)
-            for sku in product.skus
-            for v in sku.properties.values()
+    async def _candidates(self, state: dict) -> list[dict]:
+        query = _build_query_from_state(state)
+        where = _build_price_filter(state.get("price_max"), state.get("price_min"))
+        ranked = await hybrid_retriever.retrieve_products(
+            query=query, top_k_chunks=_FETCH_K * 3, top_k_products=_FETCH_K, where=where,
         )
-        numbers = _re2.findall(rf"(\d+(?:\.\d+)?)\s*{_re2.escape(unit)}", search_text)
-        if not numbers:
-            filtered.append(product)  # 找不到对应属性，不过滤
+        if state.get("include_brands"):
+            ranked = _filter_include_brands(ranked, state["include_brands"])
+        if state.get("exclude_brands"):
+            ranked = _filter_brands(ranked, state["exclude_brands"])
+        if state.get("exclude_attrs"):
+            ranked = _filter_attrs(ranked, state["exclude_attrs"])
+        if state.get("want_attrs"):
+            ranked = _filter_want_attrs(ranked, state["want_attrs"])
+        return ranked
+
+
+# ══════════════════════════════════════════════════════════════
+# SearchState 合并（确定性规则：标量覆盖 / 列表累积 / 反选 / 话题切换重置）
+# ══════════════════════════════════════════════════════════════
+
+# 用户口语 → 数据集真实 sub_category 的别名
+_CATEGORY_ALIASES: dict[str, str] = {
+    "跑鞋": "跑步鞋", "运动鞋": "跑步鞋", "球鞋": "跑步鞋",
+    "手机": "智能手机",
+    "电脑": "笔记本电脑", "笔记本": "笔记本电脑", "笔记本电脑": "笔记本电脑",
+    "耳机": "真无线耳机", "蓝牙耳机": "真无线耳机",
+    "平板": "平板电脑",
+}
+
+
+def _all_subcategories() -> set[str]:
+    return {p.sub_category for p in product_repo.all()}
+
+
+def _detect_category(text: str) -> Optional[str]:
+    """从一段文字里识别真实品类（sub_category），命中别名先归一。"""
+    if not text:
+        return None
+    for alias, canonical in _CATEGORY_ALIASES.items():
+        if alias in text:
+            return canonical
+    for sc in _all_subcategories():
+        if sc and sc in text:
+            return sc
+    return None
+
+
+def _merge_search_state(state: dict, params: dict, message: str) -> dict:
+    """把 master 解析出的本轮 patch 合并进 SearchState（确定性）。"""
+    state = dict(state)
+    state.setdefault("want_attrs", [])
+    state.setdefault("include_brands", [])
+    state.setdefault("exclude_brands", [])
+    state.setdefault("exclude_attrs", [])
+    state.setdefault("asked_slots", [])
+
+    raw_query = (params.get("query") or "").strip()
+
+    # 话题切换：本轮出现了与当前不同的真实品类 → 重置需求单
+    new_cat = _detect_category(raw_query) or _detect_category(message)
+    if new_cat and new_cat != state.get("category"):
+        state = {
+            "category": new_cat,
+            "price_min": None, "price_max": None,
+            "include_brands": [], "exclude_brands": [],
+            "exclude_attrs": [], "want_attrs": [],
+            "asked_slots": [], "shown_ids": [], "pending": {},
+        }
+        raw_query = ""  # 品类已吸收，剩余修饰按下方逻辑并入
+
+    # 首次确立品类
+    if not state.get("category"):
+        cat = _detect_category(raw_query) or _detect_category(message)
+        if cat:
+            state["category"] = cat
+            raw_query = ""
+
+    # 价格：标量覆盖（last-wins，天然处理"不要500了要800"）
+    if params.get("price_max") is not None:
+        state["price_max"] = params["price_max"]
+    if params.get("price_min") is not None:
+        state["price_min"] = params["price_min"]
+
+    # 品牌 / 排除属性：并集累积
+    state["include_brands"] = _union(state["include_brands"], params.get("include_brands"))
+    state["exclude_brands"] = _union(state["exclude_brands"], params.get("exclude_brands"))
+    state["exclude_attrs"] = _union(state["exclude_attrs"], params.get("exclude_attrs"))
+
+    # 正向属性：want_attrs 累积
+    state["want_attrs"] = _union(state["want_attrs"], params.get("want_attrs"))
+
+    # 防御兜底：master 若把属性误塞进 query（如"轻量跑鞋"），且品类已确立，
+    # 则把 query 里去掉品类后的残余词并入 want_attrs（对 master 拆分容错）。
+    if raw_query and state.get("category"):
+        residue = raw_query.replace(state["category"], "").strip()
+        for alias in _CATEGORY_ALIASES:
+            residue = residue.replace(alias, "")
+        residue = residue.strip(" ，,、。.")
+        if residue and not _detect_category(residue):
+            state["want_attrs"] = _union(state["want_attrs"], [residue])
+
+    return state
+
+
+def _union(base: list, extra) -> list:
+    out = list(base or [])
+    for x in (extra or []):
+        if x and x not in out:
+            out.append(x)
+    return out
+
+
+def _build_query_from_state(state: dict) -> str:
+    parts = [state.get("category") or ""]
+    parts += state.get("want_attrs") or []
+    return " ".join(p for p in parts if p).strip()
+
+
+def _state_label(state: dict) -> str:
+    """人类可读的约束回显："面霜 · 干皮 · 保湿 · 预算≤200" """
+    parts = [state.get("category") or ""]
+    parts += state.get("want_attrs") or []
+    if state.get("include_brands"):
+        parts += state["include_brands"]
+    price = _price_phrase(state)
+    if price:
+        parts.append(f"预算{price}")
+    return " · ".join(p for p in parts if p)
+
+
+def _price_phrase(state: dict) -> str:
+    lo, hi = state.get("price_min"), state.get("price_max")
+    if lo is not None and hi is not None:
+        return f"{int(lo)}-{int(hi)}元"
+    if hi is not None:
+        return f"≤{int(hi)}元"
+    if lo is not None:
+        return f"≥{int(lo)}元"
+    return ""
+
+
+# ══════════════════════════════════════════════════════════════
+# 引导式反问：品类 → 关键维度(slot) 清单 + 动态选项
+# ══════════════════════════════════════════════════════════════
+
+# 维度判别/选项基于商品「标题 + 营销文案」文本（消费维度如肤质/缓震在自由文本里，不在结构化 SKU）。
+# slot: {name, question, kind: 'attr'|'budget'|'brand', options: [(label, [keywords...])]（attr 用）}
+_CATEGORY_SLOTS: dict[str, list[dict]] = {
+    "美妆护肤": [
+        {"name": "肤质", "kind": "attr", "question": "您的肤质偏向哪种呢？", "options": [
+            ("干皮", ["干皮", "干性", "干燥"]),
+            ("油皮", ["油皮", "油性", "控油"]),
+            ("敏感肌", ["敏感肌", "敏感", "舒缓", "屏障"]),
+        ]},
+        {"name": "功效", "kind": "attr", "question": "您更看重哪种功效？", "options": [
+            ("保湿补水", ["保湿", "补水", "锁水"]),
+            ("美白提亮", ["美白", "提亮", "淡斑"]),
+            ("抗老紧致", ["抗老", "紧致", "抗皱", "淡纹"]),
+            ("修护屏障", ["修护", "修复", "屏障"]),
+        ]},
+        {"name": "预算", "kind": "budget", "question": "预算大概在什么范围？", "options": []},
+        {"name": "品牌", "kind": "brand", "question": "有没有偏好的品牌？", "options": []},
+    ],
+    "服饰运动": [
+        {"name": "场景", "kind": "attr", "question": "主要在什么场景穿/用呢？", "options": [
+            ("跑步", ["跑步", "跑鞋", "慢跑", "公路跑", "马拉松"]),
+            ("篮球", ["篮球", "实战", "球场"]),
+            ("徒步户外", ["徒步", "登山", "户外", "越野"]),
+            ("日常通勤", ["通勤", "日常", "休闲", "百搭"]),
+        ]},
+        {"name": "偏好", "kind": "attr", "question": "您更看重哪一点？", "options": [
+            ("轻量", ["轻量", "轻便", "轻盈", "超轻"]),
+            ("缓震", ["缓震", "减震", "回弹", "脚感"]),
+            ("防水透气", ["防水", "防泼水", "透气"]),
+        ]},
+        {"name": "预算", "kind": "budget", "question": "预算大概在什么范围？", "options": []},
+        {"name": "品牌", "kind": "brand", "question": "有没有偏好的品牌？", "options": []},
+    ],
+    "食品饮料": [
+        {"name": "偏好", "kind": "attr", "question": "有什么口味/健康偏好吗？", "options": [
+            ("无糖低卡", ["无糖", "0糖", "零糖", "低卡", "低脂", "低糖"]),
+            ("高蛋白", ["高蛋白", "蛋白", "0脂", "脱脂"]),
+            ("整箱囤货", ["整箱", "箱装", "囤货", "多盒", "多瓶"]),
+        ]},
+        {"name": "预算", "kind": "budget", "question": "预算大概在什么范围？", "options": []},
+        {"name": "品牌", "kind": "brand", "question": "有没有偏好的品牌？", "options": []},
+    ],
+    "数码电子": [
+        {"name": "用途", "kind": "attr", "question": "主要用来做什么呢？", "options": [
+            ("办公商务", ["办公", "商务", "生产力", "效率"]),
+            ("游戏性能", ["游戏", "电竞", "性能", "旗舰"]),
+            ("学生学习", ["学生", "学习", "网课", "入门"]),
+            ("影音娱乐", ["影音", "追剧", "视频", "大屏"]),
+        ]},
+        {"name": "偏好", "kind": "attr", "question": "您更看重哪一点？", "options": [
+            ("轻薄便携", ["轻薄", "便携", "轻", "纤薄"]),
+            ("长续航", ["续航", "电池", "大电池"]),
+            ("大屏", ["大屏", "大尺寸", "折叠"]),
+        ]},
+        {"name": "预算", "kind": "budget", "question": "预算大概在什么范围？", "options": []},
+        {"name": "品牌", "kind": "brand", "question": "有没有偏好的品牌？", "options": []},
+    ],
+}
+
+
+def _product_text(p) -> str:
+    mkt = ""
+    if p.rag_knowledge and p.rag_knowledge.marketing_description:
+        mkt = p.rag_knowledge.marketing_description
+    props = " ".join(v for s in p.skus for v in s.properties.values())
+    return f"{p.title} {mkt} {props}"
+
+
+def _cand_products(ranked: list[dict]) -> list:
+    return [p for rp in ranked if (p := product_repo.get(rp["product_id"]))]
+
+
+def _slots_for(cand_products: list) -> list[dict]:
+    """按候选里最常见的一级类目取 slot 清单。"""
+    if not cand_products:
+        return []
+    from collections import Counter
+    top_cat = Counter(p.category for p in cand_products).most_common(1)[0][0]
+    return _CATEGORY_SLOTS.get(top_cat, [])
+
+
+def _min_price(p) -> float:
+    return min((s.price for s in p.skus), default=p.base_price)
+
+
+def _budget_options(cand_products: list) -> list[str]:
+    """按候选价格分布动态切档（≥2 档才有区分力）。"""
+    prices = sorted(_min_price(p) for p in cand_products)
+    if len(prices) < 2 or prices[-1] <= prices[0] * 1.2:
+        return []
+    t1 = prices[len(prices) // 3]
+    t2 = prices[(2 * len(prices)) // 3]
+    t1, t2 = int(round(t1)), int(round(t2))
+    if t2 <= t1:
+        t2 = int(round(prices[-1]))
+    if t2 <= t1:
+        return []
+    return [f"{t1}元以内", f"{t1}-{t2}元", f"{t2}元以上"]
+
+
+def _next_slot_to_ask(state: dict, cand_products: list) -> Optional[dict]:
+    """取下一个「未填 + 对当前候选有区分力」的关键维度；都问完/无区分力则 None。"""
+    asked = set(state.get("asked_slots") or [])
+    want = set(state.get("want_attrs") or [])
+    for slot in _slots_for(cand_products):
+        if slot["name"] in asked:
             continue
-        vals = [float(n) for n in numbers]
-        matched = (max(vals) >= threshold) if is_min else (min(vals) <= threshold)
-        if matched:
-            filtered.append(product)
+        kind = slot["kind"]
+        if kind == "attr":
+            # 已经选过该维度任一值 → 视为已填
+            labels = {lbl for lbl, _ in slot["options"]}
+            if want & labels:
+                continue
+            present = [
+                lbl for lbl, kws in slot["options"]
+                if any(_kw_hit(kws, _product_text(p)) for p in cand_products)
+            ]
+            if len(present) >= 2:
+                return {"name": slot["name"], "kind": "attr",
+                        "question": slot["question"], "options": present}
+        elif kind == "budget":
+            if state.get("price_min") is not None or state.get("price_max") is not None:
+                continue
+            opts = _budget_options(cand_products)
+            if len(opts) >= 2:
+                return {"name": slot["name"], "kind": "budget",
+                        "question": slot["question"], "options": opts}
+        elif kind == "brand":
+            if state.get("include_brands"):
+                continue
+            brands = list(dict.fromkeys(p.brand for p in cand_products if p.brand))
+            if len(brands) >= 2:
+                return {"name": slot["name"], "kind": "brand",
+                        "question": slot["question"], "options": brands[:4]}
+    return None
 
-    return filtered if filtered else products  # 全过滤时兜底返回原列表
+
+def _kw_hit(keywords: list[str], text: str) -> bool:
+    return any(kw in text for kw in keywords)
 
 
-def _get_category_hint(query: str) -> str:
-    for pattern, hint, _ in _CATEGORY_HINTS:
-        if _re.search(pattern, query):
-            return hint
-    return "如：特定功能、款式偏好、颜色材质"
+# ══════════════════════════════════════════════════════════════
+# 反问答复解析（pending 机制）
+# ══════════════════════════════════════════════════════════════
+
+_SHOW_NOW_WORDS = {"先看看", "直接看", "直接看看", "随便", "随便看看", "帮我选",
+                   "都行", "无所谓", "看看吧", "不用问了", "直接推荐"}
+_BATCH_WORDS = ["换一批", "换一换", "换一组", "还有别的", "还有其他", "重新推荐"]
+_DISSATISFY_WORDS = ["不行", "不满意", "都不行", "不太行", "不够好", "不喜欢这些",
+                     "没有合适", "没合适", "没有喜欢", "都不喜欢"]
 
 
-def _get_category_options(query: str) -> list:
-    """返回品类专属快捷需求选项（用于问卷第三步）"""
-    for pattern, _, options in _CATEGORY_HINTS:
-        if _re.search(pattern, query):
-            return options
-    return []
+def _is_slot_answer(msg: str, pending: dict) -> bool:
+    """判断本轮是否在回答上一轮反问的 slot（按钮点击=精确命中选项；打字=包含/可解析）。"""
+    kind = pending.get("kind")
+    options = pending.get("options") or []
+    if msg in options or any(o in msg for o in options):
+        return True
+    if kind == "budget":
+        pmin, pmax = _parse_price_option(msg)
+        return pmin is not None or pmax is not None
+    if kind == "brand":
+        return any(b in msg or msg in b for b in options)
+    return False
 
+
+def _apply_slot_answer(state: dict, pending: dict, msg: str) -> dict:
+    state = dict(state)
+    kind = pending.get("kind")
+    options = pending.get("options") or []
+    chosen = next((o for o in options if o in msg or msg in o), msg)
+    if kind == "attr":
+        state["want_attrs"] = _union(state.get("want_attrs"), [chosen])
+    elif kind == "budget":
+        pmin, pmax = _parse_price_option(msg)
+        if pmin is not None:
+            state["price_min"] = pmin
+        if pmax is not None:
+            state["price_max"] = pmax
+    elif kind == "brand":
+        state["include_brands"] = _union(state.get("include_brands"), [chosen])
+    return state
+
+
+def _apply_adjustment(state: dict, action: str, ranked: list) -> dict:
+    """0结果/不满意时的方向按钮：放宽预算 / 不限品牌 / 再便宜点。"""
+    state = dict(state)
+    if action == "放宽预算":
+        state["price_min"] = None
+        state["price_max"] = None
+    elif action == "不限品牌":
+        state["include_brands"] = []
+    elif action == "再便宜点":
+        prices = sorted(_min_price(p) for p in _cand_products(ranked)) if ranked else []
+        if prices:
+            median = prices[len(prices) // 2]
+            # 取中位数以下作为新上限（确实收紧）
+            state["price_max"] = int(round(median)) if median < (state.get("price_max") or 1e9) else int(round(prices[0]))
+    return state
+
+
+# ══════════════════════════════════════════════════════════════
+# 工具函数（沿用）
+# ══════════════════════════════════════════════════════════════
 
 def _parse_price_option(message: str):
-    """把 '300-600元' / '300以内' / '1000以上' 解析成 (price_min, price_max)。"""
+    """'300-600元' / '300以内' / '1000以上' → (price_min, price_max)。"""
     if "不限" in message:
         return None, None
-    # "300-600元" or "300~600"
     m = _re.search(r"(\d+(?:\.\d+)?)\s*[-~～到]\s*(\d+(?:\.\d+)?)", message)
     if m:
         return float(m.group(1)), float(m.group(2))
-    # "300以内" / "500以下"
     m = _re.search(r"(\d+(?:\.\d+)?)\s*(?:元以内|以内|以下|元以下)", message)
     if m:
         return None, float(m.group(1))
-    # "1000以上" / "1000元以上"
     m = _re.search(r"(\d+(?:\.\d+)?)\s*(?:元以上|以上)", message)
     if m:
         return float(m.group(1)), None
     return None, None
 
 
-# 图片指代词：用户文字只是指向图片，不携带额外筛选信息
 _IMAGE_REF_WORDS = {
     "这款", "这个", "这件", "这条", "这双", "这瓶", "这盒", "这套",
     "那款", "那个", "那件", "那条", "那双", "那瓶", "那盒", "那套",
@@ -574,36 +760,22 @@ _IMAGE_REF_WORDS = {
 }
 
 
-# ─────────────────────────────────────────────────────────
-# LLM 裁判
-# ─────────────────────────────────────────────────────────
-
 async def _llm_judge(
     text_constraint: str | None,
     candidates: list[dict],
     is_image_search: bool = False,
 ) -> list[str]:
-    """
-    从候选商品中选出最符合需求的 product_id 列表（最多3个）。
-    失败时降级返回前3个。
-
-    is_image_search=True 且 text_constraint=None 时直接取视觉 top-2，
-    不调 LLM——裁判看不到图片，让它判视觉排名毫无意义且慢。
-    """
+    """从候选里选最符合需求的 product_id（最多3个），失败降级 top-3。"""
     if not candidates:
         return []
-
-    # 纯图片 / 图片+指代词：视觉检索已排好序，跳过裁判直接取前2
     if is_image_search and text_constraint is None:
         return [r["product_id"] for r in candidates[:2]]
 
-    # 加入序号，让裁判感知排名
     lines = [
         f"- [#{i + 1}] id={r['product_id']} 《{r['metadata'].get('title', '')}》 "
         f"品牌:{r['metadata'].get('brand', '')} 类目:{r['metadata'].get('sub_category', '')}"
         for i, r in enumerate(candidates)
     ]
-
     if is_image_search:
         header = "候选商品（按视觉相似度排序，#1 最匹配图片中的商品，请优先选排名靠前的）："
         if text_constraint:
@@ -629,10 +801,6 @@ async def _llm_judge(
         return [r["product_id"] for r in candidates[:3]]
 
 
-# ─────────────────────────────────────────────────────────
-# 工具函数
-# ─────────────────────────────────────────────────────────
-
 def _build_price_filter(price_max, price_min) -> dict | None:
     conditions = []
     if price_max is not None:
@@ -645,7 +813,6 @@ def _build_price_filter(price_max, price_min) -> dict | None:
 
 
 def _filter_include_brands(ranked: list[dict], incl_brands: list[str]) -> list[dict]:
-    """只保留指定品牌的商品（正向品牌过滤，与 _filter_brands 排除方向相反）。"""
     included: set[str] = set()
     for b in incl_brands:
         regional = product_repo.brands_in_region(b)
@@ -680,6 +847,24 @@ def _filter_attrs(ranked: list[dict], excl_attrs: list[str]) -> list[dict]:
         if not any(attr in chunk_contents for attr in excl_attrs):
             result.append(rp)
     return result
+
+
+def _filter_want_attrs(ranked: list[dict], want_attrs: list[str]) -> list[dict]:
+    """正向属性软过滤：保留命中最多 want_attrs 的候选；全 0 命中则不过滤（仅靠召回排序）。"""
+    if not want_attrs:
+        return ranked
+    scored = []
+    for rp in ranked:
+        p = product_repo.get(rp["product_id"])
+        if not p:
+            continue
+        text = _product_text(p)
+        hits = sum(1 for a in want_attrs if a in text)
+        scored.append((hits, rp))
+    best = max((h for h, _ in scored), default=0)
+    if best == 0:
+        return ranked  # 文案未字面命中 → 不强过滤，避免误杀
+    return [rp for h, rp in scored if h == best]
 
 
 search_agent = SearchAgent()

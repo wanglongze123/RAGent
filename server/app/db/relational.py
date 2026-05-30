@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_shown_products TEXT NOT NULL DEFAULT '[]',
     order_state         TEXT NOT NULL DEFAULT '{}',
     scene_context       TEXT NOT NULL DEFAULT '{}',
+    search_state        TEXT NOT NULL DEFAULT '{}',
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
 );
@@ -91,6 +92,10 @@ async def init_db() -> None:
             await db.execute(
                 "ALTER TABLE sessions ADD COLUMN scene_context TEXT NOT NULL DEFAULT '{}'"
             )
+        if "search_state" not in columns:
+            await db.execute(
+                "ALTER TABLE sessions ADD COLUMN search_state TEXT NOT NULL DEFAULT '{}'"
+            )
 
         # 迁移：已存在的 messages 表补上 blocks 字段（历史还原商品卡用）
         cursor = await db.execute("PRAGMA table_info(messages)")
@@ -130,6 +135,7 @@ async def get_session(session_id: str) -> Optional[dict]:
     d["last_shown_products"] = json.loads(d["last_shown_products"])
     d["order_state"] = json.loads(d.get("order_state") or "{}")
     d["scene_context"] = json.loads(d.get("scene_context") or "{}")
+    d["search_state"] = json.loads(d.get("search_state") or "{}")
     return d
 
 
@@ -167,6 +173,24 @@ async def save_scene_context(session_id: str, scene_context: dict) -> None:
 
 async def clear_scene_context(session_id: str) -> None:
     await save_scene_context(session_id, {})
+
+
+async def update_search_state(session_id: str, search_state: dict) -> None:
+    """持久化结构化搜索状态（SearchState）—— 多轮追问/细化逐轮累积的需求单"""
+    async with aiosqlite.connect(settings.sqlite_db_path) as db:
+        await db.execute(
+            "UPDATE sessions SET search_state = ?, updated_at = ? WHERE session_id = ?",
+            (
+                json.dumps(search_state, ensure_ascii=False),
+                datetime.utcnow().isoformat(),
+                session_id,
+            ),
+        )
+        await db.commit()
+
+
+async def clear_search_state(session_id: str) -> None:
+    await update_search_state(session_id, {})
 
 
 async def update_session_state(

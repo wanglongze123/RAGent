@@ -60,6 +60,7 @@ class MasterAgent:
             session = {
                 "agent_state": "browsing",
                 "last_shown_products": [],
+                "search_state": {},
             }
 
         current_state = AgentState(session.get("agent_state", "browsing"))
@@ -118,22 +119,7 @@ class MasterAgent:
             yield ev.done(session_id, current_state.value).to_sse()
             return
 
-        # ── 6. 文字搜索：模糊 query 触发问卷（图搜 / 有上下文时直接出结果）──
-        if intent == "search" and not image_base64 and not params.get("questionnaire_reply"):
-            # 用户已在搜索上下文中（看过结果 / 有历史 query） → 细化，不重新触发问卷
-            has_search_context = bool(
-                session.get("last_shown_products") or
-                (session.get("order_state") or {}).get("last_search_query")
-            )
-            # scene 主题点击进入的 search：query 来自规划，已足够具体，不触发问卷
-            from_scene_topic = bool(params.get("scene_topic"))
-            if (not has_search_context
-                    and not from_scene_topic
-                    and not _is_query_specific_enough(params)):
-                params = dict(params)
-                params["_needs_questionnaire"] = True
-
-        # ── 7. 状态机：计算下一个状态 ──────────────────────
+        # ── 6. 状态机：计算下一个状态 ──────────────────────
         next_state = get_next_state(current_state, intent)
         agent_name = _INTENT_TO_AGENT.get(intent, "search")
 
@@ -298,10 +284,6 @@ class MasterAgent:
 
         order_state = session.get("order_state") or {}
 
-        # 问卷收集阶段：所有消息直接转给 search_agent 作为问卷回复
-        if order_state.get("search_questionnaire"):
-            return _quick_dict("search", {"questionnaire_reply": message})
-
         # scene 主题导航："了解X" 且 X 在 scene_context.topics 中 → 走 search 流程
         # 必须放在 product_inquiry / quick_classify 之前，主题名可能含"防晒"等
         # 否则可能被其他关键词截走
@@ -314,7 +296,12 @@ class MasterAgent:
             return _quick_dict("product_inquiry", {"query": message})
 
         has_pending_sku = bool(order_state.get("pending_sku_product_id"))
-        quick = _quick_classify(message, current_state, has_pending_sku)
+        # 有搜索上下文（看过结果 / SearchState 有品类）→ 让"不行/换一批"等不满意词路由到 search
+        has_search_context = bool(
+            session.get("last_shown_products")
+            or (session.get("search_state") or {}).get("category")
+        )
+        quick = _quick_classify(message, current_state, has_pending_sku, has_search_context)
         if quick is not None:
             return quick
 
@@ -491,23 +478,6 @@ _INQUIRY_EXCLUSIONS = [
 ]
 
 
-def _is_query_specific_enough(params: dict) -> bool:
-    """
-    判断搜索 query 是否已有足够结构化约束，可以直接检索。
-    规则：有价格 / 品牌过滤 / 3字以上有意义修饰词 → 直接搜索。
-    只有 2 字以内的纯品类词（"跑鞋"/"面霜"）→ 触发问卷。
-    注：有搜索上下文时（last_shown_products 存在）不会进入此函数。
-    """
-    if params.get("price_max") or params.get("price_min"):
-        return True
-    if params.get("exclude_brands") or params.get("include_brands"):
-        return True
-    query = params.get("query", "")
-    filler = {"推荐", "帮我", "找", "买", "看看", "介绍", "好的", "想要", "想买"}
-    meaningful = "".join(c for c in query if c not in "".join(filler))
-    return len(meaningful) >= 3  # 3字以上（"纯牛奶"/"防水跑鞋"/"蒙牛牌子"等）直接搜
-
-
 def _match_scene_topic(message: str, session: dict) -> Optional[dict]:
     """
     场景主题导航：识别 "了解X" 模式，X 必须严格等于 scene_context.topics 中某个 theme。
@@ -581,6 +551,13 @@ _SEARCH_KEYWORDS = [
     "细化需求", "重新搜索",   # 系统生成的固定按钮文字，直接快速路由
 ]
 
+# 推荐后表达不满意 / 要换一批（仅在有搜索上下文时触发，避免误伤）
+_DISSATISFACTION_KEYWORDS = [
+    "不行", "不满意", "都不行", "不太行", "不够好", "不喜欢这些",
+    "没有合适", "没合适", "没有喜欢", "都不喜欢",
+    "换一批", "换一换", "换一组", "还有别的", "还有其他", "重新推荐",
+]
+
 # scene 生命周期控制词（系统按钮文字）：清空场景 / 重新规划全交给 scene_agent 处理
 _SCENE_LIFECYCLE_KEYWORDS = ["重新规划", "结束购物"]
 
@@ -594,7 +571,7 @@ _PURCHASE_PRODUCT_REFS = {
 }
 
 
-def _quick_classify(message: str, current_state: str, has_pending_sku: bool = False) -> Optional[dict]:  # noqa: E501
+def _quick_classify(message: str, current_state: str, has_pending_sku: bool = False, has_search_context: bool = False) -> Optional[dict]:  # noqa: E501
     """
     用纯规则判定意图。返回 LLM JSON 同构 dict，或 None（让 LLM 兜底）。
 
@@ -659,8 +636,14 @@ def _quick_classify(message: str, current_state: str, has_pending_sku: bool = Fa
         return _quick_dict("search", {"query": msg})
 
     # 用户否定了当前搜索结果（"都不是，换个方式找"）→ 快速走 search，
-    # search_agent 内部检测"都不是"后直接输出精化引导，不做检索
+    # search_agent 内部检测"都不是"后重置 SearchState
     if "都不是" in msg:
+        return _quick_dict("search", {"query": msg})
+
+    # 推荐后"不满意 / 换一批"（有搜索上下文）→ 走 search，
+    # 由 search_agent._handle_dissatisfaction 反开"调整方向"反问或出后几名，
+    # 避免被 LLM 误判成 chitchat
+    if has_search_context and any(k in msg for k in _DISSATISFACTION_KEYWORDS):
         return _quick_dict("search", {"query": msg})
 
     # SKU 规格选择快速通道：仅当上轮已发出规格询问（pending_sku_product_id 存在）时触发。

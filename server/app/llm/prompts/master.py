@@ -33,6 +33,7 @@ INTENT_CLASSIFICATION_PROMPT = """你是一个电商导购 AI 的意图分析模
     "include_brands": [],
     "exclude_brands": [],
     "exclude_attrs": [],
+    "want_attrs": [],
     "compare_products": [],
     "cart_action": null,
     "product_id": null,
@@ -47,11 +48,12 @@ INTENT_CLASSIFICATION_PROMPT = """你是一个电商导购 AI 的意图分析模
 
 ## 字段说明
 
-- query：提取语义核心，去掉价格/品牌等结构化约束，如"200元以内的洗面奶"→"洗面奶"
+- query：本轮提到的**商品品类名词**，去掉价格/品牌/属性等修饰，如"200元以内的洗面奶"→"洗面奶"；若本轮只补了属性/价格、没提新品类（如"要轻量的"/"500以内"），query 留空字符串 ""
 - price_max/price_min：从用户消息中提取价格约束，单位元
 - include_brands：用户明确只要的品牌列表，如["蒙牛"]，留空表示不限品牌
 - exclude_brands：用户明确不要的品牌列表，如["日系","欧莱雅"]
 - exclude_attrs：用户明确不要的属性，如["含酒精","香精"]
+- want_attrs：用户**正向想要的属性/功效/场景/款式修饰词**，如["轻量","防水"]/["保湿","干皮"]/["红色"]，不进 query
 - compare_products：对比意图时，要对比的商品名称或 ID 列表
 - cart_action：购物车操作类型，add/remove/update_quantity/clear/view 之一
 - product_id：当用户指代具体商品时填写，如"第一个"对应最近展示的第一个商品 ID
@@ -65,23 +67,26 @@ INTENT_CLASSIFICATION_PROMPT = """你是一个电商导购 AI 的意图分析模
 
 ## 多轮细化搜索（重要）
 
-当用户发出片段式细化需求（"500以内"/"要轻量的"/"不要耐克"/"要蒙牛品牌"等），
-必须结合对话历史和最近展示商品的 sub_category，将片段合并成完整搜索词。
+你只负责**解析本轮这一句话**说了什么，输出**本轮增量（patch）**即可。
+约束的**累积、覆盖、合并由后端代码完成**，你不要把历史约束塞回来、也不要把约束拼进 query。
 
-**约束必须从对话历史中积累，不能丢失：**
-- 上一轮提到了"100元以内"，这一轮还没说取消价格 → 继续保留 price_max=100
-- 上一轮提到了"不要耐克"，这一轮没说取消 → 继续保留 exclude_brands=["耐克"]
-- 用户说"只要蒙牛牌子" → include_brands=["蒙牛"]（正向品牌过滤）
+**只填本轮提到的字段：**
+- 本轮提了新品类名词 → 填 query（仅品类名词本身，如"跑鞋"/"面霜"）
+- 本轮只补了属性/功效/款式（"要轻量的"/"保湿的"/"红色"）→ query="", want_attrs=["轻量"]
+- 本轮只补了价格（"500以内"/"不要500了要800"）→ query="", price_max=...
+- 本轮只补了品牌（"只要蒙牛"/"不要耐克"）→ query="", include_brands / exclude_brands
 
-示例：
-- "500以内" + 上文是跑鞋 → query="跑鞋", price_max=500
-- "20元以内"（仅价格，无商品名）+ last_shown_products 含 sub_category="方便面" → query="方便面", price_max=20
-- "要轻量的" + 上文是跑鞋，price_max=500 还在 → query="轻量跑鞋", price_max=500
-- "不要耐克" + 上文是跑鞋 → query="跑鞋", exclude_brands=["耐克","Nike"]
-- "要蒙牛品牌" + 上文是纯牛奶，price_max=100 还在 → query="纯牛奶", include_brands=["蒙牛"], price_max=100
-- "有没有红色的" + 上文是连衣裙 → query="红色连衣裙"
+示例（注意 query 只放品类、修饰进 want_attrs、价格进 price_*）：
+- "500以内" → query="", price_max=500
+- "20元以内" → query="", price_max=20
+- "要轻量的" → query="", want_attrs=["轻量"]
+- "不要耐克" → query="", exclude_brands=["耐克","Nike"]
+- "只要蒙牛品牌" → query="", include_brands=["蒙牛"]
+- "有没有红色的" → query="", want_attrs=["红色"]
+- "推荐跑步鞋" → query="跑步鞋"
+- "200元以内的干皮面霜" → query="面霜", price_max=200, want_attrs=["干皮"]
 
-**禁止**：不要把 query 设为"图片相似款"/"图片同款"等占位词，必须从 last_shown_products 的 sub_category 或 title 提取真实商品类目。
+**禁止**：不要把 query 设为"图片相似款"/"图片同款"等占位词；不要把价格/品牌/属性拼进 query。
 
 ## 注意事项
 
