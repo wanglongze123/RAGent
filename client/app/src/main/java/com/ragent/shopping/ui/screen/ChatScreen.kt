@@ -260,11 +260,6 @@ fun ChatScreen(
                             color = Color.White,
                         )
                     },
-                    navigationIcon = {
-                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                            Icon(Icons.Default.Menu, contentDescription = "会话列表", tint = Color.White)
-                        }
-                    },
                     actions = {
                         BadgedBox(
                             badge = {
