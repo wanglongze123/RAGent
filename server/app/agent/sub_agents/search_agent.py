@@ -32,9 +32,9 @@ from app.rag.hybrid_retriever import hybrid_retriever
 
 
 _FETCH_K = 12          # 每轮召回上限（sub_category 最多约 12 个，足够覆盖）
-_RECOMMEND_AT = 2      # 候选收敛到 ≤ 此值即直接出卡，不再反问
+_RECOMMEND_AT = 3      # 候选收敛到 ≤ 此值即直接出卡，不再反问
 _SHOW_TOP = 3          # 一次展示的商品数
-_MAX_FOLLOW_UPS = 1    # 开放邀请后最多追问次数（不含邀请本身）
+_MAX_FOLLOW_UPS = 3    # 开放邀请后最多追问次数（不含邀请本身）
 
 
 class SearchAgent:
@@ -170,9 +170,9 @@ class SearchAgent:
         n = len(cand_products)
         asked_count = len(state.get("asked_slots") or [])
 
-        # 决策：候选够少 / 已追问过 / 无可区分维度 → 出卡；否则追问一轮
+        # 决策：候选够少 / 已追问过 / 已出过卡（用户在精细化筛选）/ 无可区分维度 → 出卡
         slot = None
-        if n > _RECOMMEND_AT and asked_count < _MAX_FOLLOW_UPS:
+        if n > _RECOMMEND_AT and asked_count < _MAX_FOLLOW_UPS and not state.get("shown_ids"):
             slot = _next_slot_dynamic(state, cand_products)   # Tier 2: SKU properties
             if slot is None:
                 slot = _next_slot_to_ask(state, cand_products)  # Tier 3: 关键词兜底
