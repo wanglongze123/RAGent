@@ -408,7 +408,7 @@ class SearchAgent:
 
     async def _candidates(self, state: dict) -> list[dict]:
         query = _build_query_from_state(state)
-        where = _build_price_filter(state.get("price_max"), state.get("price_min"))
+        where = _build_where_filter(state)
         ranked = await hybrid_retriever.retrieve_products(
             query=query, top_k_chunks=_FETCH_K * 3, top_k_products=_FETCH_K, where=where,
         )
@@ -841,6 +841,63 @@ def _build_price_filter(price_max, price_min) -> dict | None:
         conditions.append({"base_price": {"$lte": float(price_max)}})
     if price_min is not None:
         conditions.append({"base_price": {"$gte": float(price_min)}})
+    if not conditions:
+        return None
+    return conditions[0] if len(conditions) == 1 else {"$and": conditions}
+
+
+# ══════════════════════════════════════════════════════════════
+# 类目约束：把 state.category 的任意写法映射到 ChromaDB metadata.category
+# ══════════════════════════════════════════════════════════════
+
+# 宽泛词 / 口语词 → 主类目（用于无法通过 sub_category 精确匹配的情况）
+_BROAD_TO_MAIN_CAT: dict[str, str] = {
+    # 服饰运动
+    "上衣": "服饰运动", "衣服": "服饰运动", "服装": "服饰运动", "穿的": "服饰运动",
+    "裤子": "服饰运动", "鞋子": "服饰运动", "鞋": "服饰运动",
+    "运动服": "服饰运动", "运动装": "服饰运动", "运动": "服饰运动",
+    "外套": "服饰运动", "夹克": "服饰运动", "冲锋衣": "服饰运动",
+    "睡衣": "服饰运动", "内衣": "服饰运动",
+    # 美妆护肤
+    "护肤品": "美妆护肤", "化妆品": "美妆护肤", "美妆": "美妆护肤",
+    "护肤": "美妆护肤", "彩妆": "美妆护肤", "化妆": "美妆护肤",
+    "面部护理": "美妆护肤",
+    # 数码电子
+    "数码": "数码电子", "电子产品": "数码电子", "电子": "数码电子",
+    "3C": "数码电子", "配件": "数码电子",
+    # 食品饮料
+    "食品": "食品饮料", "吃的": "食品饮料", "零食": "食品饮料",
+    "饮料": "食品饮料", "食物": "食品饮料", "吃喝": "食品饮料",
+}
+
+
+def _to_main_cat(category: str) -> str:
+    """把 state.category（sub_category / 别名归一词 / 口语宽泛词）统一映射到主类目。
+    返回空字符串表示无法确定，不加类目约束。"""
+    if not category:
+        return ""
+    # 1. 精确 sub_category 匹配（最常见路径：面霜→美妆护肤，跑步鞋→服饰运动）
+    main = _sub_to_main_cat(category)
+    if main:
+        return main
+    # 2. 宽泛口语词（上衣→服饰运动，护肤品→美妆护肤 …）
+    return _BROAD_TO_MAIN_CAT.get(category, "")
+
+
+def _build_where_filter(state: dict) -> dict | None:
+    """生成 ChromaDB WHERE 条件：价格约束 + 类目约束（二者均有时取交集）。
+    类目约束在 DB 层就排除错误类目的商品，不依赖后处理。"""
+    conditions = []
+
+    if state.get("price_max") is not None:
+        conditions.append({"base_price": {"$lte": float(state["price_max"])}})
+    if state.get("price_min") is not None:
+        conditions.append({"base_price": {"$gte": float(state["price_min"])}})
+
+    main_cat = _to_main_cat(state.get("category", ""))
+    if main_cat:
+        conditions.append({"category": main_cat})   # 直接等值，BM25/ChromaDB 均支持
+
     if not conditions:
         return None
     return conditions[0] if len(conditions) == 1 else {"$and": conditions}
