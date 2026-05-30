@@ -188,7 +188,7 @@ class SearchAgent:
         await db.update_search_state(session_id, state)
 
         yield ev.text_delta(slot["question"]).to_sse()
-        yield ev.clarification(question="或者：", options=["就这些了，直接找"]).to_sse()
+        yield ev.clarification(question="", options=["直接帮我搜"]).to_sse()
 
     # ─────────────────────────────────────────────────────────
     # 出卡（收敛末轮）
