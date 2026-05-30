@@ -84,6 +84,7 @@ AGENT_PROMPTS: dict[str, str] = {
     "search":         search.SEARCH_AGENT_PROMPT,
     "search_judge":   search.SEARCH_JUDGE_PROMPT,
     "compare":        compare.COMPARE_AGENT_PROMPT,
+    "compare_table":  compare.COMPARE_TABLE_PROMPT,
     "cart":           cart.CART_AGENT_PROMPT,
     "cart_interpret": cart.CART_INTERPRET_PROMPT,
     "order":          order.ORDER_AGENT_PROMPT,

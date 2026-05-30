@@ -11,7 +11,6 @@ Skill 流程（四步法，借鉴 TikTok Shop 工作里的 Skill 编排思想）
 关键设计：对比表格的结构化数据（价格/标题/图片）全从 product_repo 取，
 不让模型生成——模型只负责生成推荐理由文字。
 """
-import asyncio
 import json
 from typing import AsyncIterator
 
@@ -48,36 +47,52 @@ class CompareAgent:
             yield ev.text_delta("抱歉，未能找到对应商品，请确认商品名称后重试。").to_sse()
             return
 
-        # ── Step 2: 直接从 product_repo 构建对比上下文（无需检索）──
+        # ── Step 2: 从 product_repo 构建结构化数据 + 给 LLM 的资料上下文 ──
+        # 价格/标题/图片等硬数据全部来自 product_repo，绝不让模型生成。
         _CN = ["第一款", "第二款", "第三款", "第四款", "第五款"]
-        context_blocks = []
+        table_products: list[dict] = []
+        price_values: list[str] = []
+        context_blocks: list[str] = []
         for i, product in enumerate(products):
             min_price = min((s.price for s in product.skus), default=product.base_price)
+            table_products.append({
+                "product_id": product.product_id,
+                "title": product.display_title,
+                "price": min_price,
+                "image_url": product.image_url,
+            })
+            price_values.append(f"¥{min_price:.0f} 起")
+
             props = list(product.skus[0].properties.items())[:3] if product.skus else []
-            props_text = "\n".join(f"{k}  {v}" for k, v in props)
+            props_text = "；".join(f"{k}:{v}" for k, v in props)
             desc = ""
             if product.rag_knowledge and product.rag_knowledge.marketing_description:
-                desc = f"简介  {product.rag_knowledge.marketing_description[:150]}"
-            block = (
-                f"{_CN[i]}  {product.brand}  {product.display_title}\n"
-                f"价格  ¥{min_price:.0f} 起\n"
-                f"{props_text}\n"
-                f"{desc}"
-            ).strip()
-            context_blocks.append(block)
-
+                desc = product.rag_knowledge.marketing_description[:300]
+            context_blocks.append(
+                f"【{_CN[i]}】{product.brand} {product.display_title}\n"
+                f"规格：{props_text or '—'}\n"
+                f"简介：{desc or '—'}"
+            )
         context = "\n\n".join(context_blocks)
 
-        # ── Step 3: LLM 生成竖排对比文字（流式）────────────────
-        async for token in middleware.chat_stream(
-            agent_name="compare",
-            user_messages=[{"role": "user", "content": message or "对比这几款商品"}],
-            prompt_vars={"context": context},
-            temperature=0.6,
-        ):
-            yield ev.text_delta(token).to_sse()
+        # ── Step 3: LLM 结构化抽取对比维度（JSON Mode，值严格取自资料）──
+        dimensions, recommendation = await self._extract_table(
+            n=len(products),
+            context=context,
+            question=message or "对比这几款商品",
+            table_products=table_products,
+        )
+        # 价格维度由系统补，保证准确（不依赖 LLM）
+        dimensions = [{"name": "价格", "values": price_values}] + dimensions
 
-        # ── Step 4: 分款加购按钮 ─────────────────────────────
+        # ── Step 4: 推送结构化对比表 ──────────────────────────
+        yield ev.comparison_table(
+            products=table_products,
+            dimensions=dimensions,
+            recommendation=recommendation,
+        ).to_sse()
+
+        # ── Step 5: 分款加购按钮 ─────────────────────────────
         buy_options = [f"加购{_CN[i]}" for i in range(len(products))]
         buy_options.append("重新搜索")
         yield ev.clarification(
@@ -125,67 +140,63 @@ class CompareAgent:
 
         return product_ids
 
-    async def _extract_dimensions(
+    async def _extract_table(
         self,
-        context_a: str,
-        context_b: str,
-        user_question: str,
-    ) -> list[dict]:
+        n: int,
+        context: str,
+        question: str,
+        table_products: list[dict],
+    ) -> tuple[list[dict], dict | None]:
         """
-        调 LLM（JSON Mode）从两个商品的资料里提取对比维度。
-        输出格式：[{"name": "价格", "values": ["¥720", "¥1690"]}, ...]
+        JSON Mode 抽取对比维度 + 推荐。维度值严格来自资料（缺失填 "—"），
+        解析/校验失败时降级为数据派生维度，保证对比表永远能展示、绝不编造。
+        返回 (dimensions, recommendation|None)。
         """
-        prompt_content = f"""从以下两个商品的资料中，提取 3-5 个对用户决策最有帮助的对比维度。
-
-用户问题：{user_question}
-
-【商品A资料】
-{context_a[:600]}
-
-【商品B资料】
-{context_b[:600]}
-
-输出 JSON，格式严格如下（不要任何额外字段）：
-{{
-  "dimensions": [
-    {{"name": "维度名称", "values": ["商品A的值", "商品B的值"]}},
-    ...
-  ]
-}}
-
-规则：
-- 只提取资料中明确有的信息
-- 某商品某维度无数据时，values 里写"资料中未提及"
-- 价格维度的 values 格式：["¥720", "¥1690"]
-"""
-        raw = await middleware.chat(
-            agent_name="compare",
-            user_messages=[{"role": "user", "content": prompt_content}],
-            json_mode=True,
-            temperature=0.0,
-        )
         try:
+            raw = await middleware.chat(
+                agent_name="compare_table",
+                user_messages=[{"role": "user", "content": question}],
+                prompt_vars={"question": question, "context": context},
+                json_mode=True,
+                temperature=0.2,
+            )
             data = json.loads(raw)
-            return data.get("dimensions", [])
         except Exception:
-            # 解析失败时返回基础价格对比
-            return [{"name": "价格", "values": [
-                f"¥{product_repo.get(p['product_id']).base_price if product_repo.get(p['product_id']) else '?'}"
-                for p in []
-            ]}]
+            data = {}
 
+        # 维度：只保留 values 长度与商品数对齐的，避免错位
+        dimensions: list[dict] = []
+        dims_in = data.get("dimensions") if isinstance(data, dict) else None
+        if isinstance(dims_in, list):
+            for d in dims_in:
+                if not isinstance(d, dict):
+                    continue
+                name = str(d.get("name", "")).strip()
+                vals = d.get("values")
+                if name and isinstance(vals, list) and len(vals) == n:
+                    dimensions.append({"name": name, "values": [str(v) for v in vals]})
 
-# ─────────────────────────────────────────────────────────
-# 工具函数
-# ─────────────────────────────────────────────────────────
+        # 推荐：index 校验后映射成真实 product_id
+        recommendation = None
+        rec_in = data.get("recommendation") if isinstance(data, dict) else None
+        if isinstance(rec_in, dict):
+            idx = rec_in.get("index")
+            reason = str(rec_in.get("reason", "")).strip()
+            if isinstance(idx, int) and 1 <= idx <= n and reason:
+                recommendation = {
+                    "product_id": table_products[idx - 1]["product_id"],
+                    "reason": reason,
+                }
 
-def _build_product_context(product, results: list[dict]) -> str:
-    """把检索结果拼成给 LLM 用的上下文"""
-    if not results:
-        return f"品牌: {product.brand} | 价格: ¥{product.base_price}"
-    top = results[0]
-    chunks = "\n".join(c.content for c in top["hit_chunks"][:3])
-    return f"品牌: {product.brand} | 价格: ¥{product.base_price}\n{chunks}"
+        # 兜底：LLM 没给出可用维度时，用数据派生的品牌维度，保证表非空
+        if not dimensions:
+            brands = []
+            for p in table_products:
+                prod = product_repo.get(p["product_id"])
+                brands.append(prod.brand if prod else "—")
+            dimensions = [{"name": "品牌", "values": brands}]
+
+        return dimensions, recommendation
 
 
 compare_agent = CompareAgent()

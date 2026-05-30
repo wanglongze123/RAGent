@@ -78,6 +78,23 @@ def product_card_list(products: list[dict], search_type: str = "text") -> SSEEve
     )
 
 
+def comparison_table(
+    products: list[dict],
+    dimensions: list[dict],
+    recommendation: Optional[dict] = None,
+) -> SSEEvent:
+    """
+    多商品结构化对比表。
+      products:       [{product_id, title, price, image_url}]（数据全来自 product_repo，不由模型生成）
+      dimensions:     [{name, values:[...]}]，values 顺序与 products 对齐
+      recommendation: {product_id, reason} 或 None
+    """
+    data: dict = {"products": products, "dimensions": dimensions}
+    if recommendation is not None:
+        data["recommendation"] = recommendation
+    return SSEEvent(type=EventType.COMPARISON_TABLE, data=data)
+
+
 def cart_update(
     action: str,  # "add" | "remove" | "update_quantity" | "checkout"（下单后清空）
     product_id: str,
