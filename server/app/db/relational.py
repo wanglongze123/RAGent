@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS messages (
     session_id  TEXT NOT NULL,
     role        TEXT NOT NULL,
     content     TEXT NOT NULL,
+    blocks      TEXT NOT NULL DEFAULT '[]',
     created_at  TEXT NOT NULL
 );
 
@@ -89,6 +90,14 @@ async def init_db() -> None:
         if "scene_context" not in columns:
             await db.execute(
                 "ALTER TABLE sessions ADD COLUMN scene_context TEXT NOT NULL DEFAULT '{}'"
+            )
+
+        # 迁移：已存在的 messages 表补上 blocks 字段（历史还原商品卡用）
+        cursor = await db.execute("PRAGMA table_info(messages)")
+        msg_columns = [row[1] for row in await cursor.fetchall()]
+        if "blocks" not in msg_columns:
+            await db.execute(
+                "ALTER TABLE messages ADD COLUMN blocks TEXT NOT NULL DEFAULT '[]'"
             )
 
         await db.commit()
@@ -186,12 +195,22 @@ async def update_session_state(
 
 # ───────────────────────── 对话历史 ─────────────────────────
 
-async def add_message(session_id: str, role: str, content: str) -> None:
+async def add_message(
+    session_id: str,
+    role: str,
+    content: str,
+    blocks: Optional[list] = None,
+) -> None:
+    """
+    存一条对话消息。blocks 携带该消息的富内容块（如商品卡列表），
+    供历史还原时重建可点击商品卡 —— 见 get_all_messages / master_agent 收集逻辑。
+    """
     now = datetime.utcnow().isoformat()
     async with aiosqlite.connect(settings.sqlite_db_path) as db:
         await db.execute(
-            "INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-            (session_id, role, content, now),
+            "INSERT INTO messages (session_id, role, content, blocks, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (session_id, role, content, json.dumps(blocks or [], ensure_ascii=False), now),
         )
         await db.commit()
 
@@ -210,15 +229,62 @@ async def get_recent_messages(session_id: str, limit: int = 10) -> list[dict]:
 
 
 async def get_all_messages(session_id: str) -> list[dict]:
+    """取全部消息（用于客户端历史回填）。blocks 反序列化为 list。"""
     async with aiosqlite.connect(settings.sqlite_db_path) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT role, content, created_at FROM messages "
+            "SELECT role, content, blocks, created_at FROM messages "
             "WHERE session_id = ? ORDER BY id ASC",
             (session_id,),
         ) as cursor:
             rows = await cursor.fetchall()
-    return [dict(r) for r in rows]
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["blocks"] = json.loads(d.get("blocks") or "[]")
+        result.append(d)
+    return result
+
+
+async def list_sessions() -> list[dict]:
+    """
+    会话列表（供客户端抽屉展示）。
+      - 只返回至少有 1 条消息的会话（过滤掉建了却没发言的空会话）
+      - preview 取最早一条 user 消息内容（没有则退回最早一条任意消息）
+      - 按最近一条消息时间倒序（最近用过的排最前；不依赖 sessions.updated_at 是否被维护）
+    """
+    sql = """
+        SELECT
+            s.session_id,
+            s.created_at,
+            s.updated_at,
+            COALESCE(
+                (SELECT content FROM messages m
+                 WHERE m.session_id = s.session_id AND m.role = 'user'
+                 ORDER BY m.id ASC LIMIT 1),
+                (SELECT content FROM messages m
+                 WHERE m.session_id = s.session_id
+                 ORDER BY m.id ASC LIMIT 1)
+            ) AS preview,
+            (SELECT MAX(created_at) FROM messages m
+             WHERE m.session_id = s.session_id) AS last_msg_at
+        FROM sessions s
+        WHERE EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.session_id)
+        ORDER BY last_msg_at DESC
+    """
+    async with aiosqlite.connect(settings.sqlite_db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(sql) as cursor:
+            rows = await cursor.fetchall()
+    return [
+        {
+            "session_id": r["session_id"],
+            "preview": r["preview"] or "",
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+        }
+        for r in rows
+    ]
 
 
 # ───────────────────────── 购物车 ─────────────────────────

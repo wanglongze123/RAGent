@@ -151,6 +151,7 @@ class MasterAgent:
         old_shown: list[dict] = list(session.get("last_shown_products", []))
         new_shown: list[dict] = []   # 本轮推出的商品（累积所有 product_card 事件）
         assistant_text = []
+        collected_blocks: list[dict] = []   # 本轮富内容块（商品卡列表等），随消息存入历史供回填
 
         # 把最近对话历史注入 session dict，子 Agent 可以直接用
         session["recent_messages"] = history
@@ -193,6 +194,11 @@ class MasterAgent:
                 token = _extract_text_delta(event_str)
                 if token:
                     assistant_text.append(token)
+
+            # 收集富内容块（商品卡列表等），存入历史供客户端回填还原
+            block = _extract_block(event_str)
+            if block:
+                collected_blocks.append(block)
 
         # 本轮有新商品则用新的；
         # "重新搜索"/"都不是"由 search_agent 主动清空了 last_shown_products，
@@ -243,8 +249,14 @@ class MasterAgent:
             )
 
         # ── 10. 保存 AI 回复到历史 ─────────────────────────
-        if assistant_text:
-            await add_message(session_id, "assistant", "".join(assistant_text))
+        # 文本或富块任一非空就存：避免"只出商品卡、无文字"的轮次漏存
+        if assistant_text or collected_blocks:
+            await add_message(
+                session_id,
+                "assistant",
+                "".join(assistant_text),
+                blocks=collected_blocks,
+            )
 
         # ── 10.5 scene 后续引导 ────────────────────────────
         # 下单完成时如果 scene_context 还在，注入主题选择 clarification，
@@ -726,6 +738,33 @@ def _extract_text_delta(event_str: str) -> str:
         except Exception:
             pass
     return ""
+
+
+# 入历史的内容型富块类型。clarification/cart_update/tool_progress 等为瞬时交互/状态事件，
+# 不入历史（否则回填后会塞满过期的"确认下单""问卷"按钮）。对比结果走 text_delta 文字，
+# 由 assistant_text 自动还原，无需入块。comparison_table/product_card 作为兼容项保留。
+_BLOCK_EVENT_TYPES = {"product_card_list", "product_card", "comparison_table"}
+
+
+def _extract_block(event_str: str) -> Optional[dict]:
+    """
+    从一条 SSE 事件字符串里提取「内容型富块」。
+    命中 _BLOCK_EVENT_TYPES 时返回 {"type": 事件类型, "data": 事件data}，否则 None。
+    结构与 SSE 事件 data 同构，客户端可复用同一套解析直接重建商品卡。
+    """
+    etype = None
+    data = None
+    for line in event_str.strip().split("\n"):
+        if line.startswith("event:"):
+            etype = line[len("event:"):].strip()
+        elif line.startswith("data:"):
+            try:
+                data = json.loads(line[len("data:"):].strip())
+            except Exception:
+                data = None
+    if etype in _BLOCK_EVENT_TYPES and data is not None:
+        return {"type": etype, "data": data}
+    return None
 
 
 master_agent = MasterAgent()

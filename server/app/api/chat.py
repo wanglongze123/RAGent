@@ -11,7 +11,12 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.agent.master_agent import master_agent
-from app.db.relational import create_session, get_session
+from app.db.relational import (
+    create_session,
+    get_all_messages,
+    get_session,
+    list_sessions,
+)
 from app.models import ChatRequest, ImageSearchRequest, SessionCreateResponse
 from app.models import events as ev
 
@@ -24,6 +29,31 @@ async def create_new_session():
     now = datetime.utcnow()
     await create_session(sid)
     return SessionCreateResponse(session_id=sid, created_at=now)
+
+
+@router.get("/sessions")
+async def get_sessions():
+    """会话列表 — 供客户端抽屉展示历史会话。"""
+    return {"sessions": await list_sessions()}
+
+
+@router.get("/sessions/{session_id}/messages")
+async def get_session_messages(session_id: str):
+    """会话历史消息 — 供客户端回填对话（含商品卡富块）。"""
+    session = await get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    rows = await get_all_messages(session_id)
+    messages = [
+        {
+            "role": r["role"],
+            "content": r["content"],
+            "blocks": r.get("blocks", []),
+            "timestamp": r.get("created_at"),
+        }
+        for r in rows
+    ]
+    return {"session_id": session_id, "messages": messages}
 
 
 @router.post("/chat/stream")
