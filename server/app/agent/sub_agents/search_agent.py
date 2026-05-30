@@ -429,11 +429,20 @@ class SearchAgent:
 
 # 用户口语 → 数据集真实 sub_category 的别名
 _CATEGORY_ALIASES: dict[str, str] = {
+    # 服饰运动
     "跑鞋": "跑步鞋", "运动鞋": "跑步鞋", "球鞋": "跑步鞋",
+    "上衣": "短袖T恤", "T恤": "短袖T恤", "短袖": "短袖T恤", "衬衫": "短袖T恤",
+    "裤子": "运动长裤", "长裤": "运动长裤", "短裤": "运动短裤",
+    "瑜伽": "瑜伽裤", "篮球鞋": "篮球鞋", "徒步": "徒步鞋", "登山鞋": "徒步鞋",
+    # 数码
     "手机": "智能手机",
     "电脑": "笔记本电脑", "笔记本": "笔记本电脑", "笔记本电脑": "笔记本电脑",
     "耳机": "真无线耳机", "蓝牙耳机": "真无线耳机",
     "平板": "平板电脑",
+    # 美妆
+    "防晒霜": "防晒", "口红": "唇釉", "粉底": "粉底液",
+    # 食品
+    "零食": "坚果/零食", "坚果": "坚果/零食", "方便面": "方便食品",
 }
 
 
@@ -482,6 +491,10 @@ def _merge_search_state(state: dict, params: dict, message: str) -> dict:
         cat = _detect_category(raw_query) or _detect_category(message)
         if cat:
             state["category"] = cat
+            raw_query = ""
+        elif raw_query:
+            # 未命中已知品类，但有查询词 → 直接以查询词作为品类，交给语义检索
+            state["category"] = raw_query
             raw_query = ""
 
     # 价格：标量覆盖（last-wins，天然处理"不要500了要800"）
