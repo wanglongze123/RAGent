@@ -4,7 +4,9 @@ import com.google.gson.Gson
 import com.ragent.shopping.data.model.AddCartRequest
 import com.ragent.shopping.data.model.CartItem
 import com.ragent.shopping.data.model.CartResponse
+import com.ragent.shopping.data.model.MessagesResponse
 import com.ragent.shopping.data.model.Product
+import com.ragent.shopping.data.model.SessionListResponse
 import com.ragent.shopping.data.model.SessionResponse
 import com.ragent.shopping.data.model.UpdateCartRequest
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +40,28 @@ class ApiService(private val gson: Gson = Gson()) {
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw Exception("创建会话失败: ${response.code}")
             gson.fromJson(response.body!!.string(), SessionResponse::class.java)
+        }
+    }
+
+    suspend fun getSessions(): SessionListResponse = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("$base/api/v1/sessions")
+            .get()
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw Exception("获取会话列表失败: ${response.code}")
+            gson.fromJson(response.body!!.string(), SessionListResponse::class.java)
+        }
+    }
+
+    suspend fun getMessages(sessionId: String): MessagesResponse = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("$base/api/v1/sessions/$sessionId/messages")
+            .get()
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw Exception("获取历史失败: ${response.code}")
+            gson.fromJson(response.body!!.string(), MessagesResponse::class.java)
         }
     }
 

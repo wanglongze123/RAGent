@@ -7,9 +7,12 @@ import com.ragent.shopping.data.model.CartItem
 import com.ragent.shopping.data.model.ChatMessage
 import com.ragent.shopping.data.model.ChatRequest
 import com.ragent.shopping.data.model.ComparisonTable
+import com.ragent.shopping.data.model.CartResponse
 import com.ragent.shopping.data.model.ImageSearchRequest
 import com.ragent.shopping.data.model.Product
+import com.ragent.shopping.data.model.SessionSummary
 import com.ragent.shopping.data.model.SseEventType
+import com.ragent.shopping.data.local.SessionPrefs
 import com.ragent.shopping.data.remote.ApiService
 import com.ragent.shopping.data.remote.NetworkConfig
 import com.ragent.shopping.data.remote.SseClient
@@ -28,15 +31,67 @@ class ChatRepository(
     var sessionId: String = ""
         private set
 
-    /** 没有会话则创建，已有则复用 */
+    /**
+     * 确保有可用会话：内存已有则复用；否则读 DataStore 持久化的 ID（App 重启恢复）；
+     * 都没有才新建并持久化。这样重启后能续上同一会话的上下文与购物车。
+     */
     suspend fun ensureSession(): String {
         if (sessionId.isNotEmpty()) return sessionId
-        sessionId = apiService.createSession().sessionId
+        val saved = SessionPrefs.getSessionId()
+        sessionId = if (!saved.isNullOrEmpty()) {
+            saved
+        } else {
+            apiService.createSession().sessionId.also { SessionPrefs.setSessionId(it) }
+        }
         return sessionId
+    }
+
+    /** 新建会话并持久化为当前会话 */
+    suspend fun newSession(): String {
+        sessionId = apiService.createSession().sessionId
+        SessionPrefs.setSessionId(sessionId)
+        return sessionId
+    }
+
+    /** 切换到指定历史会话并持久化 */
+    suspend fun switchSession(id: String): String {
+        sessionId = id
+        SessionPrefs.setSessionId(id)
+        return id
     }
 
     fun resetSession() {
         sessionId = ""
+    }
+
+    /** 会话列表（抽屉用） */
+    suspend fun loadSessions(): List<SessionSummary> = apiService.getSessions().sessions
+
+    /** 当前会话购物车（切换/恢复后同步角标用） */
+    suspend fun getCart(): CartResponse = apiService.getCart(sessionId)
+
+    /**
+     * 拉取并映射历史消息为 UI 消息列表。
+     * assistant 消息先还原文字气泡，再按 blocks 复用 parseSseEvent 重建商品卡等富组件。
+     */
+    suspend fun loadHistory(id: String): List<ChatMessage> {
+        val resp = apiService.getMessages(id)
+        val out = mutableListOf<ChatMessage>()
+        for (m in resp.messages) {
+            when (m.role) {
+                "user" -> if (m.content.isNotBlank()) out += ChatMessage.User(m.content)
+                "assistant" -> {
+                    if (m.content.isNotBlank()) {
+                        out += ChatMessage.AiText(m.content, isStreaming = false)
+                    }
+                    for (b in m.blocks) {
+                        val data = b.data ?: continue
+                        parseSseEvent(SseEventType.from(b.type), data.toString())?.let { out += it }
+                    }
+                }
+            }
+        }
+        return out
     }
 
     /** 商品详情（含 SKU 列表、营销文案、FAQ）— 供底部详情面板使用 */

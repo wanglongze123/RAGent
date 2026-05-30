@@ -57,10 +57,13 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddShoppingCart
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -72,8 +75,14 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.NavigationDrawerItemDefaults
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -119,6 +128,7 @@ import coil.compose.AsyncImage
 import com.ragent.shopping.data.model.ChatMessage
 import com.ragent.shopping.data.model.ComparisonTable
 import com.ragent.shopping.data.model.Product
+import com.ragent.shopping.data.model.SessionSummary
 import com.ragent.shopping.data.remote.NetworkConfig
 import com.ragent.shopping.ui.theme.BrandIndigo
 import com.ragent.shopping.ui.theme.BrandSky
@@ -139,6 +149,12 @@ fun ChatScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+
+    // 打开抽屉时刷新会话列表
+    LaunchedEffect(drawerState.currentValue) {
+        if (drawerState.currentValue == DrawerValue.Open) viewModel.refreshSessions()
+    }
 
     // 自动滚动：新消息 → 平滑动画；流式 token 追加 → 即时滚动（避免动画堆积卡顿）
     LaunchedEffect(uiState.messages.size) {
@@ -208,6 +224,23 @@ fun ChatScreen(
         }
     }
 
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            SessionDrawer(
+                sessions = uiState.sessions,
+                currentId = uiState.sessionId,
+                onNewSession = {
+                    viewModel.newSession()
+                    scope.launch { drawerState.close() }
+                },
+                onSwitch = { id ->
+                    viewModel.switchSession(id)
+                    scope.launch { drawerState.close() }
+                },
+            )
+        },
+    ) {
     Scaffold(
         topBar = {
             Box(
@@ -226,6 +259,11 @@ fun ChatScreen(
                             fontWeight = FontWeight.Bold,
                             color = Color.White,
                         )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                            Icon(Icons.Default.Menu, contentDescription = "会话列表", tint = Color.White)
+                        }
                     },
                     actions = {
                         BadgedBox(
@@ -303,6 +341,7 @@ fun ChatScreen(
             )
         }
     }
+    }  // ModalNavigationDrawer
 
     // 商品详情底部弹层
     uiState.detailProduct?.let { product ->
@@ -1180,6 +1219,66 @@ private fun ProductDetailSheet(
                         color = if (matchedSku != null) Color.White
                                 else MaterialTheme.colorScheme.outline,
                     )
+                }
+            }
+        }
+    }
+}
+
+// ===== 会话抽屉(豆包式) =====
+
+@Composable
+private fun SessionDrawer(
+    sessions: List<SessionSummary>,
+    currentId: String,
+    onNewSession: () -> Unit,
+    onSwitch: (String) -> Unit,
+) {
+    ModalDrawerSheet {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 12.dp),
+        ) {
+            Spacer(Modifier.height(16.dp))
+            Text(
+                "对话",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(start = 8.dp, bottom = 8.dp),
+            )
+            NavigationDrawerItem(
+                label = { Text("新建对话") },
+                icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                selected = false,
+                onClick = onNewSession,
+            )
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+            if (sessions.isEmpty()) {
+                Text(
+                    "还没有历史对话",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.padding(8.dp),
+                )
+            } else {
+                LazyColumn(modifier = Modifier.weight(1f)) {
+                    items(sessions, key = { it.sessionId }) { s ->
+                        NavigationDrawerItem(
+                            label = {
+                                Text(
+                                    s.preview.ifBlank { "新对话" },
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            },
+                            icon = { Icon(Icons.Default.ChatBubbleOutline, contentDescription = null) },
+                            selected = s.sessionId == currentId,
+                            onClick = { onSwitch(s.sessionId) },
+                            modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                        )
+                    }
                 }
             }
         }

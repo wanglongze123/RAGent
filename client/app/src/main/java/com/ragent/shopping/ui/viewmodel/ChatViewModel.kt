@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ragent.shopping.data.model.AgentState
 import com.ragent.shopping.data.model.ChatMessage
+import com.ragent.shopping.data.model.SessionSummary
 import com.ragent.shopping.data.repository.ChatRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -27,6 +28,9 @@ data class ChatUiState(
     // 商品详情面板：null 表示不展示，非 null 时展示底部弹层
     val detailProduct: com.ragent.shopping.data.model.Product? = null,
     val isLoadingDetail: Boolean = false,
+    // 会话列表（抽屉）与历史恢复中标志
+    val sessions: List<SessionSummary> = emptyList(),
+    val isRestoring: Boolean = false,
 )
 
 class ChatViewModel(
@@ -38,8 +42,51 @@ class ChatViewModel(
 
     init {
         viewModelScope.launch {
+            _uiState.update { it.copy(isRestoring = true) }
             val sid = chatRepo.ensureSession()
-            _uiState.update { it.copy(sessionId = sid) }
+            // 恢复该会话历史消息 + 购物车角标（重启续上下文）。失败兜底为空，不阻塞首屏。
+            val history = runCatching { chatRepo.loadHistory(sid) }.getOrDefault(emptyList())
+            val cart = runCatching { chatRepo.getCart() }.getOrNull()
+            _uiState.update {
+                it.copy(
+                    sessionId = sid,
+                    messages = history,
+                    isRestoring = false,
+                    cartBadgeCount = cart?.totalCount ?: 0,
+                    cartTotalPrice = cart?.totalPrice ?: 0.0,
+                )
+            }
+            refreshSessions()
+        }
+    }
+
+    /** 刷新会话列表（打开抽屉/每轮对话后调用） */
+    fun refreshSessions() {
+        viewModelScope.launch {
+            val list = runCatching { chatRepo.loadSessions() }.getOrDefault(emptyList())
+            _uiState.update { it.copy(sessions = list) }
+        }
+    }
+
+    /** 切换到历史会话：回填历史 + 同步该会话购物车角标 */
+    fun switchSession(id: String) {
+        if (id == _uiState.value.sessionId || _uiState.value.isRestoring) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isRestoring = true) }
+            chatRepo.switchSession(id)
+            val history = runCatching { chatRepo.loadHistory(id) }.getOrDefault(emptyList())
+            val cart = runCatching { chatRepo.getCart() }.getOrNull()
+            _uiState.update {
+                it.copy(
+                    sessionId = id,
+                    messages = history,
+                    isRestoring = false,
+                    cartBadgeCount = cart?.totalCount ?: 0,
+                    cartTotalPrice = cart?.totalPrice ?: 0.0,
+                    agentState = AgentState.BROWSING,
+                )
+            }
+            refreshSessions()
         }
     }
 
@@ -137,13 +184,20 @@ class ChatViewModel(
     // ===== 新建会话 =====
 
     fun newSession() {
-        chatRepo.resetSession()
-        _uiState.update {
-            ChatUiState(cartBadgeCount = it.cartBadgeCount, cartTotalPrice = it.cartTotalPrice)
-        }
+        if (_uiState.value.isRestoring) return
         viewModelScope.launch {
-            val sid = chatRepo.ensureSession()
-            _uiState.update { it.copy(sessionId = sid) }
+            val sid = chatRepo.newSession()
+            _uiState.update {
+                it.copy(
+                    sessionId = sid,
+                    messages = emptyList(),
+                    cartBadgeCount = 0,
+                    cartTotalPrice = 0.0,
+                    agentState = AgentState.BROWSING,
+                    toastMessage = "",
+                )
+            }
+            refreshSessions()
         }
     }
 
@@ -184,6 +238,8 @@ class ChatViewModel(
 
             // 收集完毕，确保流式文字已锁定、状态已清除
             finalizeStream()
+            // 刷新会话列表：首轮对话会让新会话出现在抽屉、并更新预览/排序
+            refreshSessions()
         }
     }
 

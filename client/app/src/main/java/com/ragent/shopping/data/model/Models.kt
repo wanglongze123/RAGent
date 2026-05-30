@@ -103,6 +103,35 @@ data class SessionResponse(
     @SerializedName("created_at") val createdAt: String,
 )
 
+// 会话列表（抽屉展示）
+data class SessionSummary(
+    @SerializedName("session_id") val sessionId: String = "",
+    @SerializedName("preview") val preview: String = "",
+    @SerializedName("created_at") val createdAt: String = "",
+    @SerializedName("updated_at") val updatedAt: String = "",
+)
+
+data class SessionListResponse(
+    @SerializedName("sessions") val sessions: List<SessionSummary> = emptyList(),
+)
+
+// 会话历史消息（含富块）。block.data 与 SSE 事件 data 同构，复用同一套解析重建商品卡。
+data class HistoryBlock(
+    @SerializedName("type") val type: String = "",
+    @SerializedName("data") val data: com.google.gson.JsonObject? = null,
+)
+
+data class HistoryMessage(
+    @SerializedName("role") val role: String = "",
+    @SerializedName("content") val content: String = "",
+    @SerializedName("blocks") val blocks: List<HistoryBlock> = emptyList(),
+)
+
+data class MessagesResponse(
+    @SerializedName("session_id") val sessionId: String = "",
+    @SerializedName("messages") val messages: List<HistoryMessage> = emptyList(),
+)
+
 // ===== API 请求体 =====
 
 data class ChatRequest(
