@@ -412,6 +412,12 @@ class SearchAgent:
         ranked = await hybrid_retriever.retrieve_products(
             query=query, top_k_chunks=_FETCH_K * 3, top_k_products=_FETCH_K, where=where,
         )
+        # 主类目后置过滤：防止价格过严时跨类目商品混入结果
+        main_cat = _sub_to_main_cat(state.get("category", ""))
+        if main_cat:
+            filtered = [r for r in ranked if r.get("metadata", {}).get("category") == main_cat]
+            if filtered:
+                ranked = filtered
         if state.get("include_brands"):
             ranked = _filter_include_brands(ranked, state["include_brands"])
         if state.get("exclude_brands"):
