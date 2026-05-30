@@ -34,6 +34,7 @@ from app.rag.hybrid_retriever import hybrid_retriever
 _FETCH_K = 12          # 每轮召回上限（sub_category 最多约 12 个，足够覆盖）
 _RECOMMEND_AT = 2      # 候选收敛到 ≤ 此值即直接出卡，不再反问
 _SHOW_TOP = 3          # 一次展示的商品数
+_MAX_FOLLOW_UPS = 1    # 开放邀请后最多追问次数（不含邀请本身）
 
 
 class SearchAgent:
@@ -131,7 +132,15 @@ class SearchAgent:
                 yield e
             return
 
-        # ── 全量重检索 → 决策（反问 or 出卡）──────────────────
+        # ── 首次搜索且信息单薄 → 开放性邀请（不搜索，立即返回）──
+        if not state.get("invited") and not _has_preferences(state):
+            state["invited"] = True
+            await db.update_search_state(session_id, state)
+            async for e in self._invite(state):
+                yield e
+            return
+
+        # ── 全量重检索 → 决策（追问 or 出卡）──────────────────
         async for e in self._search_and_decide(session_id, state):
             yield e
 
@@ -159,32 +168,27 @@ class SearchAgent:
 
         cand_products = _cand_products(ranked)
         n = len(cand_products)
+        asked_count = len(state.get("asked_slots") or [])
 
-        # 决策：候选够少 / 没有可区分维度可问 → 出卡；否则反问
+        # 决策：候选够少 / 已追问过 / 无可区分维度 → 出卡；否则追问一轮
         slot = None
-        if n > _RECOMMEND_AT:
-            slot = _next_slot_to_ask(state, cand_products)
+        if n > _RECOMMEND_AT and asked_count < _MAX_FOLLOW_UPS:
+            slot = _next_slot_dynamic(state, cand_products)   # Tier 2: SKU properties
+            if slot is None:
+                slot = _next_slot_to_ask(state, cand_products)  # Tier 3: 关键词兜底
 
         if slot is None:
             async for e in self._recommend(session_id, state, ranked=ranked):
                 yield e
             return
 
-        # ── 反问该维度（追问轮：不堆卡，只显示收窄进度 + 选择框）──
-        is_first_ask = not state.get("asked_slots")
-        echo = (
-            f"为您找到 {n} 款{_state_label(state)}，先帮您缩小范围～"
-            if is_first_ask else
-            f"符合的还剩 {n} 款，再确认一点～"
-        )
-        yield ev.text_delta(echo).to_sse()
-
-        options = slot["options"] + ["先看看"]
+        # ── 追问（自然语言问题 + 仅逃生按钮）──────────────────
         state.setdefault("asked_slots", []).append(slot["name"])
-        state["pending"] = {"slot": slot["name"], "kind": slot["kind"], "options": slot["options"]}
+        state["pending"] = {"slot": slot["name"], "kind": slot["kind"], "options": slot.get("options", [])}
         await db.update_search_state(session_id, state)
 
-        yield ev.clarification(question=slot["question"], options=options).to_sse()
+        yield ev.text_delta(slot["question"]).to_sse()
+        yield ev.clarification(question="或者：", options=["就这些了，直接找"]).to_sse()
 
     # ─────────────────────────────────────────────────────────
     # 出卡（收敛末轮）
@@ -299,6 +303,22 @@ class SearchAgent:
             f"没找到完全符合的商品，{reason}。要不要放宽一下条件？"
         ).to_sse()
         yield ev.clarification(question="可以这样调整：", options=opts).to_sse()
+
+    # ─────────────────────────────────────────────────────────
+    # 开放性邀请（首次单薄搜索时，不搜索，立即返回）
+    # ─────────────────────────────────────────────────────────
+
+    async def _invite(self, state: dict) -> AsyncIterator[str]:
+        sub_cat = state.get("category", "商品")
+        examples = _invitation_examples(sub_cat)
+        yield ev.text_delta(
+            f"好的！您对{sub_cat}有什么偏好或要求吗？{examples}"
+            "说说您的想法，帮您找得更准～"
+        ).to_sse()
+        yield ev.clarification(
+            question="或者直接：",
+            options=["不用了，直接找"],
+        ).to_sse()
 
     # ─────────────────────────────────────────────────────────
     # 图搜：视觉检索 + 写入 SearchState.category
@@ -678,7 +698,8 @@ def _kw_hit(keywords: list[str], text: str) -> bool:
 # ══════════════════════════════════════════════════════════════
 
 _SHOW_NOW_WORDS = {"先看看", "直接看", "直接看看", "随便", "随便看看", "帮我选",
-                   "都行", "无所谓", "看看吧", "不用问了", "直接推荐"}
+                   "都行", "无所谓", "看看吧", "不用问了", "直接推荐",
+                   "不用了", "直接找", "就这些了", "开始搜索", "开始找", "帮我找"}
 _BATCH_WORDS = ["换一批", "换一换", "换一组", "还有别的", "还有其他", "重新推荐"]
 _DISSATISFY_WORDS = ["不行", "不满意", "都不行", "不太行", "不够好", "不喜欢这些",
                      "没有合适", "没合适", "没有喜欢", "都不喜欢"]
@@ -865,6 +886,117 @@ def _filter_want_attrs(ranked: list[dict], want_attrs: list[str]) -> list[dict]:
     if best == 0:
         return ranked  # 文案未字面命中 → 不强过滤，避免误杀
     return [rp for h, rp in scored if h == best]
+
+
+# ══════════════════════════════════════════════════════════════
+# Tier 2：从候选商品 SKU properties 动态提取追问维度
+# ══════════════════════════════════════════════════════════════
+
+# 这些是"选定商品后再配置"的维度，不适合在搜索阶段追问
+_SKU_SKIP_PROPS = {
+    "颜色", "机身颜色", "帽身颜色", "配色", "色号", "色号规格",
+    "尺码", "鞋码", "鞋楦",
+    "包装", "包装类型", "包装数量", "包装规格",
+    "口味", "数量", "每箱数量", "整箱数量", "整箱盒数",
+    "整箱规格", "整箱数量", "单盒容量", "单条净含量", "总袋数",
+    "内含条数", "净含量", "产品规格",
+}
+
+# SKU property key → 自然语言追问模板（{vals} 会被替换为实际候选值）
+_SKU_PROP_QUESTIONS: dict[str, str] = {
+    "适用性别":     "您是想买男款还是女款？",
+    "鞋楦类型":     "您是男生还是女生？",
+    "款型":         "您更偏向哪种款型？（候选有：{vals}）",
+    "版本":         "您需要哪个版本？（候选有：{vals}）",
+    "产品版本":     "您需要哪个版本？（候选有：{vals}）",
+    "屏幕尺寸":     "对屏幕尺寸有要求吗？（候选有：{vals}）",
+    "存储":         "对存储容量有要求吗？（候选有：{vals}）",
+    "存储容量":     "对存储容量有要求吗？（候选有：{vals}）",
+    "存储配置":     "对存储容量有要求吗？（候选有：{vals}）",
+    "机身存储":     "对存储容量有要求吗？（候选有：{vals}）",
+    "固态硬盘容量": "对硬盘容量有要求吗？（候选有：{vals}）",
+    "内存容量":     "对内存大小有要求吗？（候选有：{vals}）",
+    "运行内存":     "对内存大小有要求吗？（候选有：{vals}）",
+    "内存":         "对内存大小有要求吗？（候选有：{vals}）",
+    "芯片型号":     "对性能档次有偏好吗？（候选有：{vals}）",
+    "芯片":         "对性能档次有偏好吗？（候选有：{vals}）",
+    "裤长":         "您想要长裤还是短裤？（候选有：{vals}）",
+    "适用人群":     "这是给谁买的？（候选有：{vals}）",
+}
+
+
+def _next_slot_dynamic(state: dict, cand_products: list) -> Optional[dict]:
+    """Tier 2：扫描候选商品 SKU properties，找最有区分力的维度（纯代码，零额外LLM调用）。"""
+    asked = set(state.get("asked_slots") or [])
+
+    prop_values: dict[str, list[str]] = {}
+    for p in cand_products:
+        for sku in p.skus:
+            for k, v in sku.properties.items():
+                if k in _SKU_SKIP_PROPS or k in asked or k not in _SKU_PROP_QUESTIONS:
+                    continue
+                if k not in prop_values:
+                    prop_values[k] = []
+                if v not in prop_values[k]:
+                    prop_values[k].append(v)
+
+    # 取区分力最强（不同值最多）的维度；同等时优先列表靠前的
+    best_key: Optional[str] = None
+    best_count = 1  # 至少要有 2 个不同值才有意义
+    for k in _SKU_PROP_QUESTIONS:  # 按预设优先级遍历
+        if k not in prop_values:
+            continue
+        vals = prop_values[k]
+        if len(vals) > best_count:
+            best_count = len(vals)
+            best_key = k
+
+    if best_key is None:
+        return None
+
+    vals = prop_values[best_key]
+    template = _SKU_PROP_QUESTIONS[best_key]
+    vals_str = "、".join(vals[:4])
+    question = template.replace("{vals}", vals_str) if "{vals}" in template else template
+
+    return {
+        "name": best_key,
+        "kind": "attr",   # 复用 _apply_slot_answer 的 attr 分支 → 写入 want_attrs
+        "question": question,
+        "options": vals[:4],
+    }
+
+
+# ══════════════════════════════════════════════════════════════
+# 开放性邀请辅助
+# ══════════════════════════════════════════════════════════════
+
+def _has_preferences(state: dict) -> bool:
+    """用户是否已提供超出品类本身的偏好信息。"""
+    return bool(
+        state.get("want_attrs") or
+        state.get("include_brands") or
+        state.get("price_min") is not None or
+        state.get("price_max") is not None
+    )
+
+
+def _sub_to_main_cat(sub_cat: str) -> str:
+    for p in product_repo.all():
+        if p.sub_category == sub_cat:
+            return p.category
+    return ""
+
+
+def _invitation_examples(sub_cat: str) -> str:
+    hints = {
+        "服饰运动": "比如男女款、使用场景、预算……",
+        "数码电子": "比如主要用途、预算、品牌偏好……",
+        "美妆护肤": "比如肤质、想要的功效、预算……",
+        "食品饮料": "比如口味偏好、健康需求、预算……",
+    }
+    main = _sub_to_main_cat(sub_cat)
+    return hints.get(main, "比如预算、品牌偏好、具体用途……")
 
 
 search_agent = SearchAgent()
