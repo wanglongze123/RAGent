@@ -432,6 +432,9 @@ class SearchAgent:
             yield ev.text_delta("抱歉，商品信息暂时无法获取。").to_sse()
             return
 
+        # 图搜的相似度分数（score = 1 - 余弦距离，∈[0,1]），供客户端展示"匹配度"标签
+        score_map = {rp["product_id"]: rp.get("score", 0.0) for rp in ranked}
+
         # 保存本次搜索上下文，供后续细化时复用（绕过 LLM 重推断）
         context_to_save = query if query else (
             shown_products[0].sub_category if shown_products else ""
@@ -454,7 +457,10 @@ class SearchAgent:
             products=[
                 {"product_id": p.product_id, "title": p.display_title,
                  "brand": p.brand, "image_url": p.image_url,
-                 "price": p.base_price, "sub_category": p.sub_category}
+                 "price": p.base_price, "sub_category": p.sub_category,
+                 # 仅图搜带匹配度（保留 4 位小数），文字搜索不带此字段
+                 **({"similarity_score": round(score_map.get(p.product_id, 0.0), 4)}
+                    if image_base64 else {})}
                 for p in shown_products
             ],
             search_type="image" if image_base64 else "text",
