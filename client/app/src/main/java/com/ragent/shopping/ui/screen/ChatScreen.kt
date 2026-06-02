@@ -872,24 +872,24 @@ private fun ComparisonMessage(table: ComparisonTable, onProductClick: (String) -
     val rowHeight = 52.dp
     val borderColor = Color(0xFFDDDDDD)
 
-    val tableBorder = Color(0xFFDDDDDD)
-
     Column(modifier = Modifier.fillMaxWidth()) {
         // 表格卡片（不含推荐文字）
         Card(
             modifier = Modifier.fillMaxWidth(),
             elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-            border = BorderStroke(1.dp, tableBorder),
+            border = BorderStroke(1.dp, borderColor),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.background),
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
-                Text("商品对比", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(10.dp))
-
                 Row {
-                    // 左列：维度名称（固定不滚动）
+                    // 左列：左上角是"商品对比"标题，下面是维度名
                     Column(modifier = Modifier.width(dimColWidth)) {
-                        Box(modifier = Modifier.height(headerHeight))
+                        Box(
+                            modifier = Modifier.height(headerHeight).fillMaxWidth(),
+                            contentAlignment = Alignment.CenterStart,
+                        ) {
+                            Text("商品对比", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        }
                         HorizontalDivider(color = borderColor)
                         table.dimensions.forEach { dim ->
                             Box(
@@ -917,10 +917,11 @@ private fun ComparisonMessage(table: ComparisonTable, onProductClick: (String) -
                                     .clickable { onProductClick(product.productId) }
                                     .padding(horizontal = 10.dp),
                             ) {
+                                // 商品名与"商品对比"同行（表头行）
                                 Box(modifier = Modifier.height(headerHeight), contentAlignment = Alignment.CenterStart) {
                                     Text(
                                         product.title,
-                                        style = MaterialTheme.typography.bodySmall,
+                                        style = MaterialTheme.typography.bodyMedium,
                                         maxLines = 3,
                                         overflow = TextOverflow.Ellipsis,
                                         fontWeight = FontWeight.Medium,
