@@ -31,22 +31,22 @@ val Typography = Typography(
     bodyLarge = TextStyle(
         fontFamily   = FontFamily.Default,
         fontWeight   = FontWeight.Normal,
-        fontSize     = 16.sp,
-        lineHeight   = 25.sp,
+        fontSize     = 17.sp,
+        lineHeight   = 26.sp,
         letterSpacing = 0.15.sp,
     ),
     bodyMedium = TextStyle(
         fontFamily   = FontFamily.Default,
         fontWeight   = FontWeight.Normal,
-        fontSize     = 14.sp,
-        lineHeight   = 22.sp,
+        fontSize     = 15.sp,
+        lineHeight   = 23.sp,
         letterSpacing = 0.2.sp,
     ),
     bodySmall = TextStyle(
         fontFamily   = FontFamily.Default,
         fontWeight   = FontWeight.Normal,
-        fontSize     = 12.sp,
-        lineHeight   = 18.sp,
+        fontSize     = 13.sp,
+        lineHeight   = 20.sp,
         letterSpacing = 0.3.sp,
     ),
     labelLarge = TextStyle(
