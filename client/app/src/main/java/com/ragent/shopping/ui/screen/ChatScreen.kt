@@ -574,9 +574,8 @@ private fun AiTextBubble(text: String, isStreaming: Boolean) {
     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
         Surface(
             shape = RoundedCornerShape(topStart = 4.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 16.dp),
-            color = MaterialTheme.colorScheme.surface,
-            shadowElevation = 2.dp,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            color = Color(0xFFF2F2F7),
+            shadowElevation = 0.dp,
         ) {
             Text(
                 text = displayText,
@@ -584,7 +583,7 @@ private fun AiTextBubble(text: String, isStreaming: Boolean) {
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 10.dp),
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = Color(0xFF1A1A1A),
             )
         }
     }
