@@ -48,6 +48,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.pager.rememberPagerState
@@ -259,6 +260,11 @@ fun ChatScreen(
                             fontWeight = FontWeight.Bold,
                             color = Color.White,
                         )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                            Icon(Icons.Default.Menu, contentDescription = "会话列表", tint = Color.White)
+                        }
                     },
                     actions = {
                         BadgedBox(
@@ -859,50 +865,95 @@ private fun ProductCardLarge(product: Product, onClick: () -> Unit) {
 
 @Composable
 private fun ComparisonMessage(table: ComparisonTable, onProductClick: (String) -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth(), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text("商品对比", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
+    val scrollState = rememberScrollState()
+    val dimColWidth = 76.dp
+    val prodColWidth = 120.dp
+    val headerHeight = 52.dp
+    val rowHeight = 52.dp
+    val dividerColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
 
-            // 商品图片行
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Spacer(Modifier.width(80.dp))
-                table.products.forEach { product ->
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clickable { onProductClick(product.productId) },
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        AsyncImage(
-                            model = NetworkConfig.imageUrl(product.imageUrl),
-                            contentDescription = product.title,
-                            modifier = Modifier.size(56.dp).clip(RoundedCornerShape(4.dp)),
-                            contentScale = ContentScale.Crop,
-                        )
-                        Text(product.title, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text("¥%.0f".format(product.displayPrice), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+    Card(modifier = Modifier.fillMaxWidth(), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("商品对比", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(12.dp))
+
+            // 表格：左侧固定维度列 + 右侧商品列横向滑动
+            Row {
+                // 左列：维度名称（固定不滚动）
+                Column(modifier = Modifier.width(dimColWidth)) {
+                    Box(modifier = Modifier.height(headerHeight))   // 与商品标题行对齐
+                    HorizontalDivider(color = dividerColor)
+                    table.dimensions.forEach { dim ->
+                        Box(
+                            modifier = Modifier.height(rowHeight).fillMaxWidth(),
+                            contentAlignment = Alignment.CenterStart,
+                        ) {
+                            Text(
+                                dim.name,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                        HorizontalDivider(color = dividerColor)
                     }
                 }
-            }
 
-            Spacer(Modifier.height(8.dp))
-
-            // 对比维度
-            table.dimensions.forEach { dim ->
-                Row(modifier = Modifier.padding(vertical = 3.dp)) {
-                    Text(dim.name, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium, modifier = Modifier.width(80.dp))
-                    dim.values.forEachIndexed { i, value ->
-                        Text(value, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                // 右侧：商品列，整体可横滑
+                Row(modifier = Modifier.horizontalScroll(scrollState)) {
+                    table.products.forEachIndexed { idx, product ->
+                        Column(
+                            modifier = Modifier
+                                .width(prodColWidth)
+                                .clickable { onProductClick(product.productId) }
+                                .padding(start = 10.dp),
+                        ) {
+                            // 商品名 + 价格（无图片）
+                            Box(modifier = Modifier.height(headerHeight), contentAlignment = Alignment.CenterStart) {
+                                Column {
+                                    Text(
+                                        product.title,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                        fontWeight = FontWeight.Medium,
+                                    )
+                                    Text(
+                                        "¥%.0f".format(product.displayPrice),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.error,
+                                        fontWeight = FontWeight.Bold,
+                                    )
+                                }
+                            }
+                            HorizontalDivider(color = dividerColor)
+                            table.dimensions.forEach { dim ->
+                                val value = dim.values.getOrElse(idx) { "—" }
+                                Box(
+                                    modifier = Modifier.height(rowHeight),
+                                    contentAlignment = Alignment.CenterStart,
+                                ) {
+                                    Text(
+                                        value,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                HorizontalDivider(color = dividerColor)
+                            }
+                        }
                     }
                 }
             }
 
             // 推荐理由
             table.recommendation?.let { rec ->
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(12.dp))
                 Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(8.dp)) {
-                    Text(rec.reason, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(8.dp))
+                    Row(modifier = Modifier.padding(12.dp)) {
+                        Text("推荐：", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                        Text(rec.reason, style = MaterialTheme.typography.bodyMedium)
+                    }
                 }
             }
         }
