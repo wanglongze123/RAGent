@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -48,7 +49,6 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.pager.rememberPagerState
@@ -78,6 +78,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
@@ -864,86 +865,75 @@ private fun ProductCardLarge(product: Product, onClick: () -> Unit) {
 
 @Composable
 private fun ComparisonMessage(table: ComparisonTable, onProductClick: (String) -> Unit) {
-    val scrollState = rememberScrollState()
-    val dimColWidth = 76.dp
-    val prodColWidth = 120.dp
-    val headerHeight = 52.dp
+    val dimColWidth = 72.dp
+    val headerHeight = 56.dp
     val rowHeight = 52.dp
     val borderColor = Color(0xFFDDDDDD)
 
     Column(modifier = Modifier.fillMaxWidth()) {
-        // 表格卡片（不含推荐文字）
+        // 表格卡片（行式布局：横线贯通整宽，列间竖线分隔，商品列等分剩余宽度）
         Card(
             modifier = Modifier.fillMaxWidth(),
             elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
             border = BorderStroke(1.dp, borderColor),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.background),
         ) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Row {
-                    // 左列：左上角是"商品对比"标题，下面是维度名
-                    Column(modifier = Modifier.width(dimColWidth)) {
+            Column {
+                // 表头行："商品对比" + 各商品名
+                Row(modifier = Modifier.height(headerHeight)) {
+                    Box(
+                        modifier = Modifier.width(dimColWidth).fillMaxHeight().padding(horizontal = 10.dp),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        Text("商品对比", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    }
+                    table.products.forEach { product ->
+                        VerticalDivider(color = borderColor)
                         Box(
-                            modifier = Modifier.height(headerHeight).fillMaxWidth(),
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .clickable { onProductClick(product.productId) }
+                                .padding(horizontal = 10.dp),
                             contentAlignment = Alignment.CenterStart,
                         ) {
-                            Text("商品对比", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            Text(
+                                product.title,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                fontWeight = FontWeight.Medium,
+                            )
                         }
-                        HorizontalDivider(color = borderColor)
-                        table.dimensions.forEach { dim ->
+                    }
+                }
+                HorizontalDivider(color = borderColor)
+
+                // 维度行
+                table.dimensions.forEachIndexed { dimIdx, dim ->
+                    Row(modifier = Modifier.height(rowHeight)) {
+                        Box(
+                            modifier = Modifier.width(dimColWidth).fillMaxHeight().padding(horizontal = 10.dp),
+                            contentAlignment = Alignment.CenterStart,
+                        ) {
+                            Text(dim.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                        }
+                        table.products.forEachIndexed { idx, _ ->
+                            VerticalDivider(color = borderColor)
                             Box(
-                                modifier = Modifier.height(rowHeight).fillMaxWidth(),
+                                modifier = Modifier.weight(1f).fillMaxHeight().padding(horizontal = 10.dp),
                                 contentAlignment = Alignment.CenterStart,
                             ) {
-                                Text(dim.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                            }
-                            HorizontalDivider(color = borderColor)
-                        }
-                    }
-
-                    // 左右列分隔线
-                    HorizontalDivider(
-                        modifier = Modifier.width(1.dp).height(headerHeight + rowHeight * table.dimensions.size),
-                        color = borderColor,
-                    )
-
-                    // 右侧商品列，横向滑动
-                    Row(modifier = Modifier.horizontalScroll(scrollState)) {
-                        table.products.forEachIndexed { idx, product ->
-                            Column(
-                                modifier = Modifier
-                                    .width(prodColWidth)
-                                    .clickable { onProductClick(product.productId) }
-                                    .padding(horizontal = 10.dp),
-                            ) {
-                                // 商品名与"商品对比"同行（表头行）
-                                Box(modifier = Modifier.height(headerHeight), contentAlignment = Alignment.CenterStart) {
-                                    Text(
-                                        product.title,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        maxLines = 3,
-                                        overflow = TextOverflow.Ellipsis,
-                                        fontWeight = FontWeight.Medium,
-                                    )
-                                }
-                                HorizontalDivider(color = borderColor)
-                                table.dimensions.forEach { dim ->
-                                    Box(
-                                        modifier = Modifier.height(rowHeight),
-                                        contentAlignment = Alignment.CenterStart,
-                                    ) {
-                                        Text(
-                                            dim.values.getOrElse(idx) { "—" },
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            maxLines = 2,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                    }
-                                    HorizontalDivider(color = borderColor)
-                                }
+                                Text(
+                                    dim.values.getOrElse(idx) { "—" },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
                             }
                         }
                     }
+                    if (dimIdx < table.dimensions.size - 1) HorizontalDivider(color = borderColor)
                 }
             }
         }
