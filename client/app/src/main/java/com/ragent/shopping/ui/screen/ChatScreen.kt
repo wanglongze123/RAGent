@@ -581,7 +581,7 @@ private fun AiTextBubble(text: String, isStreaming: Boolean) {
             Text(
                 text = displayText,
                 modifier = Modifier
-                    .widthIn(max = 300.dp)
+                    .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 10.dp),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface,
