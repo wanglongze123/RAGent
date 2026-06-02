@@ -870,92 +870,96 @@ private fun ComparisonMessage(table: ComparisonTable, onProductClick: (String) -
     val prodColWidth = 120.dp
     val headerHeight = 52.dp
     val rowHeight = 52.dp
-    val dividerColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+    val borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
 
-    Card(modifier = Modifier.fillMaxWidth(), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text("商品对比", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(12.dp))
+    Column(modifier = Modifier.fillMaxWidth()) {
+        // 表格卡片（不含推荐文字）
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+            border = BorderStroke(1.dp, borderColor),
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text("商品对比", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(10.dp))
 
-            // 表格：左侧固定维度列 + 右侧商品列横向滑动
-            Row {
-                // 左列：维度名称（固定不滚动）
-                Column(modifier = Modifier.width(dimColWidth)) {
-                    Box(modifier = Modifier.height(headerHeight))   // 与商品标题行对齐
-                    HorizontalDivider(color = dividerColor)
-                    table.dimensions.forEach { dim ->
-                        Box(
-                            modifier = Modifier.height(rowHeight).fillMaxWidth(),
-                            contentAlignment = Alignment.CenterStart,
-                        ) {
-                            Text(
-                                dim.name,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                        }
-                        HorizontalDivider(color = dividerColor)
-                    }
-                }
-
-                // 右侧：商品列，整体可横滑
-                Row(modifier = Modifier.horizontalScroll(scrollState)) {
-                    table.products.forEachIndexed { idx, product ->
-                        Column(
-                            modifier = Modifier
-                                .width(prodColWidth)
-                                .clickable { onProductClick(product.productId) }
-                                .padding(start = 10.dp),
-                        ) {
-                            // 商品名 + 价格（无图片）
-                            Box(modifier = Modifier.height(headerHeight), contentAlignment = Alignment.CenterStart) {
-                                Column {
-                                    Text(
-                                        product.title,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis,
-                                        fontWeight = FontWeight.Medium,
-                                    )
-                                    Text(
-                                        "¥%.0f".format(product.displayPrice),
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.error,
-                                        fontWeight = FontWeight.Bold,
-                                    )
-                                }
+                Row {
+                    // 左列：维度名称（固定不滚动）
+                    Column(modifier = Modifier.width(dimColWidth)) {
+                        Box(modifier = Modifier.height(headerHeight))
+                        HorizontalDivider(color = borderColor)
+                        table.dimensions.forEach { dim ->
+                            Box(
+                                modifier = Modifier.height(rowHeight).fillMaxWidth(),
+                                contentAlignment = Alignment.CenterStart,
+                            ) {
+                                Text(dim.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                             }
-                            HorizontalDivider(color = dividerColor)
-                            table.dimensions.forEach { dim ->
-                                val value = dim.values.getOrElse(idx) { "—" }
-                                Box(
-                                    modifier = Modifier.height(rowHeight),
-                                    contentAlignment = Alignment.CenterStart,
-                                ) {
-                                    Text(
-                                        value,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
+                            HorizontalDivider(color = borderColor)
+                        }
+                    }
+
+                    // 左右列分隔线
+                    HorizontalDivider(
+                        modifier = Modifier.width(1.dp).height(headerHeight + rowHeight * table.dimensions.size),
+                        color = borderColor,
+                    )
+
+                    // 右侧商品列，横向滑动
+                    Row(modifier = Modifier.horizontalScroll(scrollState)) {
+                        table.products.forEachIndexed { idx, product ->
+                            Column(
+                                modifier = Modifier
+                                    .width(prodColWidth)
+                                    .clickable { onProductClick(product.productId) }
+                                    .padding(horizontal = 10.dp),
+                            ) {
+                                Box(modifier = Modifier.height(headerHeight), contentAlignment = Alignment.CenterStart) {
+                                    Column {
+                                        Text(
+                                            product.title,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                            fontWeight = FontWeight.Medium,
+                                        )
+                                        Text(
+                                            "¥%.0f".format(product.displayPrice),
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.error,
+                                            fontWeight = FontWeight.Bold,
+                                        )
+                                    }
                                 }
-                                HorizontalDivider(color = dividerColor)
+                                HorizontalDivider(color = borderColor)
+                                table.dimensions.forEach { dim ->
+                                    Box(
+                                        modifier = Modifier.height(rowHeight),
+                                        contentAlignment = Alignment.CenterStart,
+                                    ) {
+                                        Text(
+                                            dim.values.getOrElse(idx) { "—" },
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                    HorizontalDivider(color = borderColor)
+                                }
                             }
                         }
                     }
                 }
             }
+        }
 
-            // 推荐理由
-            table.recommendation?.let { rec ->
-                Spacer(Modifier.height(12.dp))
-                Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(8.dp)) {
-                    Row(modifier = Modifier.padding(12.dp)) {
-                        Text("推荐：", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
-                        Text(rec.reason, style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-            }
+        // 推荐理由：移出表格，作为独立 AI 气泡
+        table.recommendation?.let { rec ->
+            Spacer(Modifier.height(6.dp))
+            AiTextBubble(
+                text = "综合来看，${rec.reason}",
+                isStreaming = false,
+            )
         }
     }
 }
