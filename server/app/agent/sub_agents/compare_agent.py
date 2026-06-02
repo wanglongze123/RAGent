@@ -76,6 +76,7 @@ class CompareAgent:
         context = "\n\n".join(context_blocks)
 
         # ── Step 3: LLM 结构化抽取对比维度（JSON Mode，值严格取自资料）──
+        yield ev.tool_progress("compare_table", "正在分析各维度差异，生成对比表…").to_sse()
         dimensions, recommendation = await self._extract_table(
             n=len(products),
             context=context,
