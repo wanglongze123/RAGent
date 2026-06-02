@@ -870,14 +870,17 @@ private fun ComparisonMessage(table: ComparisonTable, onProductClick: (String) -
     val prodColWidth = 120.dp
     val headerHeight = 52.dp
     val rowHeight = 52.dp
-    val borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+    val borderColor = Color(0xFFDDDDDD)
+
+    val tableBorder = Color(0xFFDDDDDD)
 
     Column(modifier = Modifier.fillMaxWidth()) {
         // 表格卡片（不含推荐文字）
         Card(
             modifier = Modifier.fillMaxWidth(),
-            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-            border = BorderStroke(1.dp, borderColor),
+            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+            border = BorderStroke(1.dp, tableBorder),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.background),
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
                 Text("商品对比", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -915,21 +918,13 @@ private fun ComparisonMessage(table: ComparisonTable, onProductClick: (String) -
                                     .padding(horizontal = 10.dp),
                             ) {
                                 Box(modifier = Modifier.height(headerHeight), contentAlignment = Alignment.CenterStart) {
-                                    Column {
-                                        Text(
-                                            product.title,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            maxLines = 2,
-                                            overflow = TextOverflow.Ellipsis,
-                                            fontWeight = FontWeight.Medium,
-                                        )
-                                        Text(
-                                            "¥%.0f".format(product.displayPrice),
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.error,
-                                            fontWeight = FontWeight.Bold,
-                                        )
-                                    }
+                                    Text(
+                                        product.title,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 3,
+                                        overflow = TextOverflow.Ellipsis,
+                                        fontWeight = FontWeight.Medium,
+                                    )
                                 }
                                 HorizontalDivider(color = borderColor)
                                 table.dimensions.forEach { dim ->
