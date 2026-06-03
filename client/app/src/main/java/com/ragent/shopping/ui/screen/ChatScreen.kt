@@ -189,7 +189,7 @@ fun ChatScreen(
     }
 
     // ── STT（语音转文字）──────────────────────────────────────
-    var inputText by remember { mutableStateOf("") }   // 从 ChatInputBar 提升到此处
+    var voiceInput by remember { mutableStateOf<String?>(null) }
 
     val sttLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -198,17 +198,24 @@ fun ChatScreen(
             val text = result.data
                 ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
                 ?.firstOrNull() ?: ""
-            if (text.isNotBlank()) inputText = text
+            if (text.isNotBlank()) voiceInput = text
         }
     }
 
     fun launchStt() {
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "说出您想搜索的商品…")
+        try {
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
+                putExtra(RecognizerIntent.EXTRA_PROMPT, "说出您想搜索的商品…")
+            }
+            sttLauncher.launch(intent)
+        } catch (e: android.content.ActivityNotFoundException) {
+            // 设备未安装语音识别（部分国产机），提示用户
+            scope.launch {
+                snackbarHostState.showSnackbar("此设备不支持语音识别")
+            }
         }
-        sttLauncher.launch(intent)
     }
 
     val sttPermLauncher = rememberLauncherForActivityResult(
@@ -362,14 +369,13 @@ fun ChatScreen(
             // 输入栏
             ChatInputBar(
                 isLoading = uiState.isLoading,
-                inputText = inputText,
-                onInputTextChange = { inputText = it },
+                voiceInput = voiceInput,
+                onVoiceInputConsumed = { voiceInput = null },
                 pendingBitmap = pendingBitmap,
                 onSend = { text ->
                     viewModel.sendMessage(text, pendingImageBase64, pendingBitmap)
                     pendingImageBase64 = null
                     pendingBitmap = null
-                    inputText = ""
                 },
                 onClearImage = {
                     pendingImageBase64 = null
@@ -428,8 +434,8 @@ fun ChatScreen(
 @Composable
 private fun ChatInputBar(
     isLoading: Boolean,
-    inputText: String,
-    onInputTextChange: (String) -> Unit,
+    voiceInput: String?,           // STT 识别结果，非 null 时填入输入框
+    onVoiceInputConsumed: () -> Unit,
     pendingBitmap: android.graphics.Bitmap?,
     onSend: (String) -> Unit,
     onClearImage: () -> Unit,
@@ -437,6 +443,16 @@ private fun ChatInputBar(
     onGalleryClick: () -> Unit,
     onVoiceClick: () -> Unit,
 ) {
+    var inputText by remember { mutableStateOf("") }
+
+    // 收到 STT 结果时填入输入框
+    LaunchedEffect(voiceInput) {
+        if (!voiceInput.isNullOrBlank()) {
+            inputText = voiceInput
+            onVoiceInputConsumed()
+        }
+    }
+
     val canSend = (inputText.isNotBlank() || pendingBitmap != null) && !isLoading
 
     // 流光渐变：发送按钮
@@ -521,7 +537,7 @@ private fun ChatInputBar(
                 }
                 OutlinedTextField(
                     value = inputText,
-                    onValueChange = onInputTextChange,
+                    onValueChange = { inputText = it },
                     modifier = Modifier.weight(1f),
                     placeholder = {
                         Text(
@@ -540,7 +556,7 @@ private fun ChatInputBar(
                     textStyle = MaterialTheme.typography.bodyMedium,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(onSend = {
-                        if (canSend) onSend(inputText.trim())
+                        if (canSend) { onSend(inputText.trim()); inputText = "" }
                     }),
                 )
                 // 麦克风按钮（输入框为空时显示，有文字时隐藏避免遮挡发送按钮）
@@ -569,7 +585,7 @@ private fun ChatInputBar(
                                 MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
                             )
                         ))
-                        .clickable(enabled = canSend) { onSend(inputText.trim()) },
+                        .clickable(enabled = canSend) { onSend(inputText.trim()); inputText = "" },
                     contentAlignment = Alignment.Center,
                 ) {
                     if (isLoading) {
