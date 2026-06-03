@@ -259,7 +259,11 @@ class MasterAgent:
                 ).to_sse()
 
         # ── 11. done 事件 ──────────────────────────────────
-        yield ev.done(session_id, next_state.value).to_sse()
+        # order_agent 等子 Agent 可能在执行中直接更新了 agent_state（如提交订单后写 browsing），
+        # 重新从 DB 读取，保证 done 事件里的状态与实际一致。
+        _final_session = await get_session(session_id)
+        _final_state = (_final_session.get("agent_state") or next_state.value) if _final_session else next_state.value
+        yield ev.done(session_id, _final_state).to_sse()
 
     # ─────────────────────────────────────────────────────
     # 私有方法
