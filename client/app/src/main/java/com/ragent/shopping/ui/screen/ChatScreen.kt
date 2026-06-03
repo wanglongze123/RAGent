@@ -586,6 +586,7 @@ private fun UserBubble(text: String, bitmap: android.graphics.Bitmap? = null) {
 
 @Composable
 private fun AiTextBubble(text: String, isStreaming: Boolean) {
+    // 流式光标加在末尾最后一个非空行
     val displayText = if (isStreaming) "$text▌" else text
     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
         Surface(
@@ -593,13 +594,13 @@ private fun AiTextBubble(text: String, isStreaming: Boolean) {
             color = Color(0xFFF2F2F7),
             shadowElevation = 0.dp,
         ) {
-            Text(
+            MarkdownContent(
                 text = displayText,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 10.dp),
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFF1A1A1A),
+                baseStyle = MaterialTheme.typography.bodyMedium,
+                baseColor = Color(0xFF1A1A1A),
             )
         }
     }
