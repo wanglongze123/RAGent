@@ -541,7 +541,7 @@ private fun MessageItem(
             is ChatMessage.AiText -> AiTextBubble(message.text, message.isStreaming)
             is ChatMessage.AiStatus -> StatusBubble(message.message)
             is ChatMessage.AiProductCard -> ProductCardMessage(message.product, onProductClick)
-            is ChatMessage.AiProductList -> ProductCarousel(message.products, onProductClick, onOptionSelected)
+            is ChatMessage.AiProductList -> ProductCarousel(message.products, message.searchType, onProductClick, onOptionSelected)
             is ChatMessage.AiComparison -> ComparisonMessage(message.table, onProductClick)
             is ChatMessage.AiClarification -> ClarificationMessage(message.question, message.options, onOptionSelected)
             is ChatMessage.AiError -> ErrorBubble(message.message)
@@ -718,6 +718,7 @@ private fun ProductCardMessage(product: Product, onProductClick: (String) -> Uni
 @Composable
 private fun ProductCarousel(
     products: List<Product>,
+    searchType: String,
     onProductClick: (String) -> Unit,
     onOptionSelected: (String) -> Unit,
 ) {
@@ -730,7 +731,7 @@ private fun ProductCarousel(
             contentPadding = PaddingValues(horizontal = 16.dp),
             pageSpacing = 12.dp,
         ) { page ->
-            ProductCardLarge(products[page]) { onProductClick(products[page].productId) }
+            ProductCardLarge(products[page], searchType) { onProductClick(products[page].productId) }
         }
 
         Spacer(Modifier.height(10.dp))
@@ -789,7 +790,7 @@ private fun ProductCarousel(
 }
 
 @Composable
-private fun ProductCardLarge(product: Product, onClick: () -> Unit) {
+private fun ProductCardLarge(product: Product, searchType: String = "text", onClick: () -> Unit) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -812,23 +813,26 @@ private fun ProductCardLarge(product: Product, onClick: () -> Unit) {
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Fit,
                 )
-                // 拍照找货：左上角"匹配度"角标（仅当后端带回 similarity_score）
-                product.similarityScore?.let { score ->
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(10.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Brush.linearGradient(listOf(BrandIndigo, BrandViolet)))
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                    ) {
-                        Text(
-                            "匹配度 %.0f%%".format(score * 100),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
+                // 左上角来源角标：所有模式统一样式，只有文案不同
+                val badgeText = if (searchType == "image") "📷 图搜推荐" else "✦ AI 精选"
+                val badgeColors = if (searchType == "image")
+                    listOf(BrandViolet, BrandSky)
+                else
+                    listOf(BrandIndigo, BrandViolet)
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(10.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Brush.linearGradient(badgeColors))
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                ) {
+                    Text(
+                        badgeText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                    )
                 }
             }
             Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
