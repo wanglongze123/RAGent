@@ -1,9 +1,13 @@
 package com.ragent.shopping.ui.screen
 
 import android.Manifest
+import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
+import android.speech.RecognizerIntent
+import android.speech.tts.TextToSpeech
 import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -67,8 +71,11 @@ import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.ShoppingCart
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
@@ -104,6 +111,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -183,6 +191,62 @@ fun ChatScreen(
         }
     }
 
+    // ── TTS（文字转语音）──────────────────────────────────────
+    val tts = remember {
+        var instance: TextToSpeech? = null
+        instance = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                val result = instance?.setLanguage(java.util.Locale.SIMPLIFIED_CHINESE)
+                if (result == TextToSpeech.LANG_MISSING_DATA ||
+                    result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    instance?.setLanguage(java.util.Locale.getDefault())
+                }
+            }
+        }
+        instance!!
+    }
+    DisposableEffect(Unit) { onDispose { tts.stop(); tts.shutdown() } }
+
+    // AI 回复结束（isLoading true→false）时自动朗读最后一条文字
+    var prevLoading by remember { mutableStateOf(false) }
+    LaunchedEffect(uiState.isLoading) {
+        if (prevLoading && !uiState.isLoading && uiState.ttsEnabled) {
+            val lastText = uiState.messages.filterIsInstance<ChatMessage.AiText>().lastOrNull()?.text
+            if (!lastText.isNullOrBlank()) {
+                tts.speak(stripMarkdown(lastText), TextToSpeech.QUEUE_FLUSH, null, "ai")
+            }
+        }
+        prevLoading = uiState.isLoading
+    }
+
+    // ── STT（语音转文字）──────────────────────────────────────
+    var inputText by remember { mutableStateOf("") }   // 从 ChatInputBar 提升到此处
+
+    val sttLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val text = result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull() ?: ""
+            if (text.isNotBlank()) inputText = text
+        }
+    }
+
+    fun launchStt() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "说出您想搜索的商品…")
+        }
+        sttLauncher.launch(intent)
+    }
+
+    val sttPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> if (granted) launchStt() }
+
+    // ── pending 图片状态 ──────────────────────────────────────
     // pending 图片状态：选好图后先放在输入栏，等用户点发送
     var pendingImageBase64 by remember { mutableStateOf<String?>(null) }
     var pendingBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
@@ -273,6 +337,14 @@ fun ChatScreen(
                         }
                     },
                     actions = {
+                        // TTS 开关：亮起=开启朗读，暗=静音
+                        IconButton(onClick = viewModel::toggleTts) {
+                            Icon(
+                                if (uiState.ttsEnabled) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
+                                contentDescription = if (uiState.ttsEnabled) "关闭语音播报" else "开启语音播报",
+                                tint = if (uiState.ttsEnabled) Color.White else Color.White.copy(alpha = 0.45f),
+                            )
+                        }
                         IconButton(onClick = onNavigateToOrders) {
                             Icon(
                                 Icons.Default.ReceiptLong,
@@ -329,11 +401,15 @@ fun ChatScreen(
             // 输入栏
             ChatInputBar(
                 isLoading = uiState.isLoading,
+                inputText = inputText,
+                onInputTextChange = { inputText = it },
                 pendingBitmap = pendingBitmap,
                 onSend = { text ->
                     viewModel.sendMessage(text, pendingImageBase64, pendingBitmap)
                     pendingImageBase64 = null
                     pendingBitmap = null
+                    inputText = ""
+                    tts.stop()   // 用户发消息时停止当前朗读
                 },
                 onClearImage = {
                     pendingImageBase64 = null
@@ -352,6 +428,12 @@ fun ChatScreen(
                     }
                 },
                 onGalleryClick = { imagePickerLauncher.launch("image/*") },
+                onVoiceClick = {
+                    val hasPerm = ContextCompat.checkSelfPermission(
+                        context, Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+                    if (hasPerm) launchStt() else sttPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                },
             )
         }
     }
@@ -386,13 +468,15 @@ fun ChatScreen(
 @Composable
 private fun ChatInputBar(
     isLoading: Boolean,
+    inputText: String,
+    onInputTextChange: (String) -> Unit,
     pendingBitmap: android.graphics.Bitmap?,
     onSend: (String) -> Unit,
     onClearImage: () -> Unit,
     onCameraClick: () -> Unit,
     onGalleryClick: () -> Unit,
+    onVoiceClick: () -> Unit,
 ) {
-    var inputText by remember { mutableStateOf("") }
     val canSend = (inputText.isNotBlank() || pendingBitmap != null) && !isLoading
 
     // 流光渐变：发送按钮
@@ -477,7 +561,7 @@ private fun ChatInputBar(
                 }
                 OutlinedTextField(
                     value = inputText,
-                    onValueChange = { inputText = it },
+                    onValueChange = onInputTextChange,
                     modifier = Modifier.weight(1f),
                     placeholder = {
                         Text(
@@ -496,9 +580,24 @@ private fun ChatInputBar(
                     textStyle = MaterialTheme.typography.bodyMedium,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(onSend = {
-                        if (canSend) { onSend(inputText.trim()); inputText = "" }
+                        if (canSend) onSend(inputText.trim())
                     }),
                 )
+                // 麦克风按钮（输入框为空时显示，有文字时隐藏避免遮挡发送按钮）
+                if (inputText.isBlank() && pendingBitmap == null) {
+                    IconButton(
+                        onClick = onVoiceClick,
+                        enabled = !isLoading,
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            Icons.Default.Mic,
+                            contentDescription = "语音输入",
+                            tint = BrandIndigo,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                }
                 Spacer(Modifier.width(4.dp))
                 Box(
                     modifier = Modifier
@@ -510,7 +609,7 @@ private fun ChatInputBar(
                                 MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
                             )
                         ))
-                        .clickable(enabled = canSend) { onSend(inputText.trim()); inputText = "" },
+                        .clickable(enabled = canSend) { onSend(inputText.trim()) },
                     contentAlignment = Alignment.Center,
                 ) {
                     if (isLoading) {
@@ -1444,3 +1543,14 @@ private fun createCameraUri(context: android.content.Context): Uri {
     val file = File.createTempFile("photo_", ".jpg", dir)
     return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
 }
+
+/** 朗读前去掉 Markdown 符号，避免读出"星星加粗星星"之类 */
+private fun stripMarkdown(text: String): String = text
+    .replace(Regex("#{1,6}\\s+"), "")
+    .replace(Regex("\\*{1,2}(.*?)\\*{1,2}"), "$1")
+    .replace(Regex("`([^`]*)`"), "$1")
+    .replace(Regex("^[-*>]\\s+", RegexOption.MULTILINE), "")
+    .replace(Regex("^\\d+\\.\\s+", RegexOption.MULTILINE), "")
+    .replace("---", "")
+    .replace("▌", "")
+    .trim()
