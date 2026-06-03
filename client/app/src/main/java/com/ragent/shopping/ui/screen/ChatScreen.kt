@@ -148,6 +148,9 @@ fun ChatScreen(
     onNavigateToProduct: (String) -> Unit,
     onNavigateToCart: () -> Unit,
     onNavigateToOrders: () -> Unit = {},
+    onNavigateToCamera: () -> Unit = {},
+    pendingCameraBitmap: android.graphics.Bitmap? = null,
+    onCameraBitmapConsumed: () -> Unit = {},
     viewModel: ChatViewModel = viewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -205,30 +208,20 @@ fun ChatScreen(
         }
     }
 
-    // 拍照：用 TakePicture + FileProvider
-    var cameraImageUri by remember { mutableStateOf<Uri?>(null) }
-    val cameraLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.TakePicture()
-    ) { success ->
-        if (success) {
-            cameraImageUri?.let { uri ->
-                scope.launch {
-                    val bitmap = uriToBitmap(context, uri) ?: return@launch
-                    val base64 = bitmapToBase64(bitmap)
-                    setPendingImage(base64, bitmap)
-                }
-            }
+    // 应用内相机返回的图片：从 Navigation 共享状态接收
+    LaunchedEffect(pendingCameraBitmap) {
+        pendingCameraBitmap?.let { bitmap ->
+            val base64 = bitmapToBase64(bitmap)
+            setPendingImage(base64, bitmap)
+            onCameraBitmapConsumed()
         }
     }
 
+    // 相机权限（应用内相机仍需权限）
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) {
-            val uri = createCameraUri(context)
-            cameraImageUri = uri
-            cameraLauncher.launch(uri)
-        }
+        if (granted) onNavigateToCamera()
     }
 
     ModalNavigationDrawer(
@@ -343,13 +336,8 @@ fun ChatScreen(
                     val hasPerm = ContextCompat.checkSelfPermission(
                         context, Manifest.permission.CAMERA
                     ) == PackageManager.PERMISSION_GRANTED
-                    if (hasPerm) {
-                        val uri = createCameraUri(context)
-                        cameraImageUri = uri
-                        cameraLauncher.launch(uri)
-                    } else {
-                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                    }
+                    if (hasPerm) onNavigateToCamera()
+                    else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                 },
                 onGalleryClick = { imagePickerLauncher.launch("image/*") },
             )
