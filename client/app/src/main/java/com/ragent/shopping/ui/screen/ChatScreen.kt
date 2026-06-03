@@ -1154,29 +1154,26 @@ private fun ProductDetailSheet(
                 // ── SKU 选择 ──
                 propertyKeys.forEach { key ->
                     val values = product.skus.mapNotNull { it.properties[key] }.distinct()
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
+                    // 只有一个可选值时不展示（固定规格，不需要用户选择）
+                    if (values.size <= 1) return@forEach
+                    Column(modifier = Modifier.fillMaxWidth()) {
                         Text(
                             key,
                             style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.width(48.dp),
                         )
-                        Row(
+                        Spacer(Modifier.height(8.dp))
+                        // FlowRow 自动换行，避免长文本 chip 溢出截断
+                        FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             values.forEach { v ->
                                 val selected = selectedProps[key] == v
                                 FilterChip(
                                     selected = selected,
                                     onClick = {
-                                        // 切换某一维度时，跳转到「含该值且与当前选择重合最多」的真实 SKU。
-                                        // 这样 selectedProps 始终等于某个真实存在的 SKU 组合，
-                                        // 价格显示与加购都永远正确 —— 修复非完整组合（如手机/笔记本
-                                        // 颜色×存储缺货组合）下「切规格价格回退、加错货」的问题。
                                         val target = product.skus
                                             .filter { it.properties[key] == v }
                                             .maxByOrNull { sku ->
@@ -1200,7 +1197,7 @@ private fun ProductDetailSheet(
                             }
                         }
                     }
-                    Spacer(Modifier.height(14.dp))
+                    Spacer(Modifier.height(16.dp))
                 }
 
                 // ── 商品介绍 ──
