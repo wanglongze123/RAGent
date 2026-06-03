@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.ragent.shopping.data.model.AgentState
 import com.ragent.shopping.data.model.ChatMessage
 import com.ragent.shopping.data.model.SessionSummary
+import com.ragent.shopping.data.local.SessionPrefs
 import com.ragent.shopping.data.repository.ChatRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,6 +35,10 @@ data class ChatUiState(
     // 收货信息表单 BottomSheet
     val showOrderForm: Boolean = false,
     val orderFormAddresses: List<com.ragent.shopping.data.model.SavedAddress> = emptyList(),
+    // 上次填写的收货信息（跨会话预填）
+    val lastUsedName: String = "",
+    val lastUsedPhone: String = "",
+    val lastUsedAddress: String = "",
 )
 
 class ChatViewModel(
@@ -213,12 +218,14 @@ class ChatViewModel(
 
     fun clearToast() = _uiState.update { it.copy(toastMessage = "") }
 
-    /** 用户提交收货信息表单（不显示用户气泡，避免个人信息裸露在对话里） */
+    /** 用户提交收货信息表单（不显示用户气泡，同时持久化到 DataStore 跨会话复用） */
     fun submitOrderForm(name: String, phone: String, address: String) {
         _uiState.update { it.copy(showOrderForm = false, orderFormAddresses = emptyList()) }
         if (_uiState.value.isLoading) return
-        val payload = """{"name":"${name.trim()}","phone":"${phone.trim()}","address":"${address.trim()}"}"""
+        val n = name.trim(); val p = phone.trim(); val a = address.trim()
+        val payload = """{"name":"$n","phone":"$p","address":"$a"}"""
         viewModelScope.launch {
+            SessionPrefs.saveReceiverInfo(n, p, a)   // 全局持久化，换会话不丢
             chatRepo.ensureSession()
             _uiState.update { it.copy(isLoading = true) }
             addStatus("正在思考...")
@@ -328,8 +335,22 @@ class ChatViewModel(
                 is ChatMessage.InternalDone ->
                     state.copy(agentState = AgentState.from(event.agentState))
 
-                is ChatMessage.InternalOrderForm ->
-                    state.copy(showOrderForm = true, orderFormAddresses = event.savedAddresses)
+                is ChatMessage.InternalOrderForm -> {
+                    // 先标记要弹表单，同时异步加载 DataStore 里的上次收货信息
+                    viewModelScope.launch {
+                        val (name, phone, address) = SessionPrefs.getLastReceiverInfo()
+                        _uiState.update {
+                            it.copy(
+                                showOrderForm = true,
+                                orderFormAddresses = event.savedAddresses,
+                                lastUsedName = name,
+                                lastUsedPhone = phone,
+                                lastUsedAddress = address,
+                            )
+                        }
+                    }
+                    state  // 立即返回原 state，避免在 update 里嵌套 update
+                }
 
                 else -> state
             }

@@ -363,6 +363,9 @@ fun ChatScreen(
     if (uiState.showOrderForm) {
         OrderFormBottomSheet(
             savedAddresses = uiState.orderFormAddresses,
+            initialName    = uiState.lastUsedName,
+            initialPhone   = uiState.lastUsedPhone,
+            initialAddress = uiState.lastUsedAddress,
             onSubmit = { name, phone, address ->
                 viewModel.submitOrderForm(name, phone, address)
             },
