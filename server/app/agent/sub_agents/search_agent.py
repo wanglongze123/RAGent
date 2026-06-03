@@ -448,17 +448,42 @@ def _all_subcategories() -> set[str]:
     return {p.sub_category for p in product_repo.all()}
 
 
+# 否定前缀：若品类词紧跟在这些词之后（窗口内），视为「排除」而非「想要」，不取作品类
+_NEGATION_MARKERS = ("不要", "不想要", "不需要", "不是", "不用", "别要", "别", "除了", "不含", "没有", "不喜欢")
+
+
+def _is_negated(text: str, pos: int) -> bool:
+    """品类词出现在 pos，检查其前方小窗口内是否有否定词（如「不要酸奶」）。"""
+    window = text[max(0, pos - 4):pos]
+    return any(neg in window for neg in _NEGATION_MARKERS)
+
+
 def _detect_category(text: str) -> Optional[str]:
-    """从一段文字里识别真实品类（sub_category），命中别名先归一。"""
+    """从一段文字里识别真实品类（sub_category），命中别名先归一。
+    多个品类词共存时取「最早出现且未被否定」的那个（确定性，
+    天然处理「买牛奶不要酸奶」——牛奶在前且酸奶被否定）。"""
     if not text:
         return None
+
+    candidates: list[tuple[int, str]] = []  # (位置, 归一后的品类)
+    # 别名
     for alias, canonical in _CATEGORY_ALIASES.items():
-        if alias in text:
-            return canonical
+        pos = text.find(alias)
+        if pos != -1 and not _is_negated(text, pos):
+            candidates.append((pos, canonical))
+    # 真实 sub_category
     for sc in _all_subcategories():
-        if sc and sc in text:
-            return sc
-    return None
+        if not sc:
+            continue
+        pos = text.find(sc)
+        if pos != -1 and not _is_negated(text, pos):
+            candidates.append((pos, sc))
+
+    if not candidates:
+        return None
+    # 最早出现的优先；同位置时别名（通常更短的口语词）已先入列
+    candidates.sort(key=lambda c: c[0])
+    return candidates[0][1]
 
 
 def _merge_search_state(state: dict, params: dict, message: str) -> dict:
@@ -473,7 +498,10 @@ def _merge_search_state(state: dict, params: dict, message: str) -> dict:
     raw_query = (params.get("query") or "").strip()
 
     # 话题切换：本轮出现了与当前不同的真实品类 → 重置需求单
-    new_cat = _detect_category(raw_query) or _detect_category(message)
+    # raw_query 是 master LLM 语义提取的干净词，优先用；为空才降级扫原始 message
+    new_cat = _detect_category(raw_query) or (
+        _detect_category(message) if not raw_query else None
+    )
     if new_cat and new_cat != state.get("category"):
         state = {
             "category": new_cat,
@@ -484,9 +512,11 @@ def _merge_search_state(state: dict, params: dict, message: str) -> dict:
         }
         raw_query = ""  # 品类已吸收，剩余修饰按下方逻辑并入
 
-    # 首次确立品类
+    # 首次确立品类（同上，raw_query 非空时不扫原始 message）
     if not state.get("category"):
-        cat = _detect_category(raw_query) or _detect_category(message)
+        cat = _detect_category(raw_query) or (
+            _detect_category(message) if not raw_query else None
+        )
         if cat:
             state["category"] = cat
             raw_query = ""
