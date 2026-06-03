@@ -828,7 +828,8 @@ def _parse_price_option(message: str):
         return None, None
     m = _re.search(r"(\d+(?:\.\d+)?)\s*[-~～到]\s*(\d+(?:\.\d+)?)", message)
     if m:
-        return float(m.group(1)), float(m.group(2))
+        a, b = float(m.group(1)), float(m.group(2))
+        return min(a, b), max(a, b)
     m = _re.search(r"(\d+(?:\.\d+)?)\s*(?:元以内|以内|以下|元以下)", message)
     if m:
         return None, float(m.group(1))
@@ -991,8 +992,9 @@ def _filter_brands(ranked: list[dict], excl_brands: list[str]) -> list[dict]:
 def _filter_attrs(ranked: list[dict], excl_attrs: list[str]) -> list[dict]:
     result = []
     for rp in ranked:
-        chunk_contents = " ".join(c.content for c in rp.get("hit_chunks", []))
-        if not any(attr in chunk_contents for attr in excl_attrs):
+        p = product_repo.get(rp["product_id"])
+        text = _product_text(p) if p else ""
+        if not any(attr in text for attr in excl_attrs):
             result.append(rp)
     return result
 
