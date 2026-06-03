@@ -49,6 +49,8 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.pager.rememberPagerState
@@ -889,71 +891,91 @@ private fun ordinalMark(index: Int): String =
 
 @Composable
 private fun ComparisonMessage(table: ComparisonTable, onProductClick: (String) -> Unit) {
-    val dimColWidth = 72.dp
-    val headerHeight = 56.dp
-    val rowHeight = 52.dp
-    val borderColor = Color(0xFFDDDDDD)
+    val dimColWidth   = 68.dp
+    val productColWidth = 130.dp   // 固定宽度：多款时横向滚动，不再截断
+    val borderColor   = Color(0xFFDDDDDD)
+    val scrollState   = rememberScrollState()
 
     Column(modifier = Modifier.fillMaxWidth()) {
-        // 表格卡片（行式布局：横线贯通整宽，列间竖线分隔，商品列等分剩余宽度）
         Card(
             modifier = Modifier.fillMaxWidth(),
             elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
             border = BorderStroke(1.dp, borderColor),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.background),
         ) {
-            Column {
-                // 表头行："商品对比" + 各商品名
-                Row(modifier = Modifier.height(headerHeight)) {
+            // horizontalScroll 让表格超宽时可左右滑动
+            Column(modifier = Modifier.horizontalScroll(scrollState)) {
+
+                // ── 表头行 ──────────────────────────────────
+                Row(modifier = Modifier.height(IntrinsicSize.Min)) {
                     Box(
-                        modifier = Modifier.width(dimColWidth).fillMaxHeight().padding(horizontal = 10.dp),
+                        modifier = Modifier
+                            .width(dimColWidth)
+                            .fillMaxHeight()
+                            .padding(horizontal = 8.dp, vertical = 10.dp),
                         contentAlignment = Alignment.CenterStart,
                     ) {
-                        Text("商品对比", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        Text(
+                            "对比",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                     table.products.forEachIndexed { idx, product ->
                         VerticalDivider(color = borderColor)
                         Box(
                             modifier = Modifier
-                                .weight(1f)
+                                .width(productColWidth)
                                 .fillMaxHeight()
                                 .clickable { onProductClick(product.productId) }
-                                .padding(horizontal = 10.dp),
-                            contentAlignment = Alignment.CenterStart,
+                                .padding(horizontal = 10.dp, vertical = 10.dp),
+                            contentAlignment = Alignment.TopStart,
                         ) {
-                            // 序号前缀（①②③…）与底部"加购第N款"按钮一一对应
                             Text(
                                 "${ordinalMark(idx)} ${product.title}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                                fontWeight = FontWeight.Medium,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                                lineHeight = 18.sp,
                             )
                         }
                     }
                 }
                 HorizontalDivider(color = borderColor)
 
-                // 维度行
+                // ── 维度行 ──────────────────────────────────
                 table.dimensions.forEachIndexed { dimIdx, dim ->
-                    Row(modifier = Modifier.height(rowHeight)) {
+                    Row(modifier = Modifier.height(IntrinsicSize.Min)) {
+                        // 维度名称列（固定宽度，居中对齐）
                         Box(
-                            modifier = Modifier.width(dimColWidth).fillMaxHeight().padding(horizontal = 10.dp),
+                            modifier = Modifier
+                                .width(dimColWidth)
+                                .fillMaxHeight()
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                .padding(horizontal = 8.dp, vertical = 10.dp),
                             contentAlignment = Alignment.CenterStart,
                         ) {
-                            Text(dim.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                dim.name,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
+                        // 各商品值列（无 maxLines，内容完整展示）
                         table.products.forEachIndexed { idx, _ ->
                             VerticalDivider(color = borderColor)
                             Box(
-                                modifier = Modifier.weight(1f).fillMaxHeight().padding(horizontal = 10.dp),
-                                contentAlignment = Alignment.CenterStart,
+                                modifier = Modifier
+                                    .width(productColWidth)
+                                    .fillMaxHeight()
+                                    .padding(horizontal = 10.dp, vertical = 10.dp),
+                                contentAlignment = Alignment.TopStart,
                             ) {
                                 Text(
                                     dim.values.getOrElse(idx) { "—" },
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    lineHeight = 18.sp,
                                 )
                             }
                         }
@@ -963,7 +985,19 @@ private fun ComparisonMessage(table: ComparisonTable, onProductClick: (String) -
             }
         }
 
-        // 推荐理由：移出表格，作为独立 AI 气泡（点名推荐的是哪一款，避免"这款"指代不清）
+        // 滚动提示（有多款商品且内容超出屏幕时显示）
+        if (table.products.size >= 3) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "← 左右滑动查看全部对比 →",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+        }
+
+        // 推荐理由
         table.recommendation?.let { rec ->
             Spacer(Modifier.height(6.dp))
             val recName = table.products.firstOrNull { it.productId == rec.productId }?.title
