@@ -7,7 +7,6 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
 import android.speech.RecognizerIntent
-import android.speech.tts.TextToSpeech
 import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -74,8 +73,6 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.ShoppingCart
-import androidx.compose.material.icons.filled.VolumeOff
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
@@ -189,34 +186,6 @@ fun ChatScreen(
             snackbarHostState.showSnackbar(uiState.toastMessage)
             viewModel.clearToast()
         }
-    }
-
-    // ── TTS（文字转语音）──────────────────────────────────────
-    val tts = remember {
-        var instance: TextToSpeech? = null
-        instance = TextToSpeech(context) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                val result = instance?.setLanguage(java.util.Locale.SIMPLIFIED_CHINESE)
-                if (result == TextToSpeech.LANG_MISSING_DATA ||
-                    result == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    instance?.setLanguage(java.util.Locale.getDefault())
-                }
-            }
-        }
-        instance!!
-    }
-    DisposableEffect(Unit) { onDispose { tts.stop(); tts.shutdown() } }
-
-    // AI 回复结束（isLoading true→false）时自动朗读最后一条文字
-    var prevLoading by remember { mutableStateOf(false) }
-    LaunchedEffect(uiState.isLoading) {
-        if (prevLoading && !uiState.isLoading && uiState.ttsEnabled) {
-            val lastText = uiState.messages.filterIsInstance<ChatMessage.AiText>().lastOrNull()?.text
-            if (!lastText.isNullOrBlank()) {
-                tts.speak(stripMarkdown(lastText), TextToSpeech.QUEUE_FLUSH, null, "ai")
-            }
-        }
-        prevLoading = uiState.isLoading
     }
 
     // ── STT（语音转文字）──────────────────────────────────────
@@ -337,14 +306,6 @@ fun ChatScreen(
                         }
                     },
                     actions = {
-                        // TTS 开关：亮起=开启朗读，暗=静音
-                        IconButton(onClick = viewModel::toggleTts) {
-                            Icon(
-                                if (uiState.ttsEnabled) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
-                                contentDescription = if (uiState.ttsEnabled) "关闭语音播报" else "开启语音播报",
-                                tint = if (uiState.ttsEnabled) Color.White else Color.White.copy(alpha = 0.45f),
-                            )
-                        }
                         IconButton(onClick = onNavigateToOrders) {
                             Icon(
                                 Icons.Default.ReceiptLong,
@@ -409,7 +370,6 @@ fun ChatScreen(
                     pendingImageBase64 = null
                     pendingBitmap = null
                     inputText = ""
-                    tts.stop()   // 用户发消息时停止当前朗读
                 },
                 onClearImage = {
                     pendingImageBase64 = null

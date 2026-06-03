@@ -32,8 +32,6 @@ data class ChatUiState(
     // 会话列表（抽屉）与历史恢复中标志
     val sessions: List<SessionSummary> = emptyList(),
     val isRestoring: Boolean = false,
-    // TTS 开关：用户手动切换，AI 回复结束后自动朗读
-    val ttsEnabled: Boolean = false,
     // 自动滚到底的信号：每次有新内容出现就 +1，ChatScreen 监听此值
     val scrollTick: Int = 0,
     // 收货信息表单 BottomSheet
@@ -222,7 +220,6 @@ class ChatViewModel(
 
     fun clearToast() = _uiState.update { it.copy(toastMessage = "") }
 
-    fun toggleTts() = _uiState.update { it.copy(ttsEnabled = !it.ttsEnabled) }
 
     /** 用户提交收货信息表单（不显示用户气泡，同时持久化到 DataStore 跨会话复用） */
     fun submitOrderForm(name: String, phone: String, address: String) {
