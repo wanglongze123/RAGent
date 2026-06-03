@@ -526,6 +526,15 @@ def _merge_search_state(state: dict, params: dict, message: str) -> dict:
             state["category"] = clean or raw_query
             raw_query = ""
 
+    # 约束合并前快照，用于检测是否发生了细化（需清空 shown_ids）
+    _prev_constraints = (
+        state.get("price_min"), state.get("price_max"),
+        tuple(state.get("include_brands", [])),
+        tuple(state.get("exclude_brands", [])),
+        tuple(state.get("exclude_attrs", [])),
+        tuple(state.get("want_attrs", [])),
+    )
+
     # 价格：标量覆盖（last-wins，天然处理"不要500了要800"）
     if params.get("price_max") is not None:
         state["price_max"] = params["price_max"]
@@ -549,6 +558,18 @@ def _merge_search_state(state: dict, params: dict, message: str) -> dict:
         residue = residue.strip(" ，,、。.")
         if residue and not _detect_category(residue):
             state["want_attrs"] = _union(state["want_attrs"], [residue])
+
+    # 同品类细化（加价格/品牌/属性约束）时清空 shown_ids，
+    # 否则旧的展示 id 会把新约束下有效的候选全部排除，导致"换一批"无结果。
+    _new_constraints = (
+        state.get("price_min"), state.get("price_max"),
+        tuple(state.get("include_brands", [])),
+        tuple(state.get("exclude_brands", [])),
+        tuple(state.get("exclude_attrs", [])),
+        tuple(state.get("want_attrs", [])),
+    )
+    if _new_constraints != _prev_constraints:
+        state["shown_ids"] = []
 
     return state
 
