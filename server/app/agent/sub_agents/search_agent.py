@@ -171,8 +171,13 @@ class SearchAgent:
         asked_count = len(state.get("asked_slots") or [])
 
         # 决策：候选够少 / 已追问过 / 已出过卡（用户在精细化筛选）/ 无可区分维度 → 出卡
+        # 用户已指定品牌 → 意图明确，直接出卡，不追问（避免"华为笔记本"还被问用途）
         slot = None
-        if n > _RECOMMEND_AT and asked_count < _MAX_FOLLOW_UPS and not state.get("shown_ids"):
+        user_already_specific = bool(state.get("include_brands"))
+        if (not user_already_specific
+                and n > _RECOMMEND_AT
+                and asked_count < _MAX_FOLLOW_UPS
+                and not state.get("shown_ids")):
             slot = _next_slot_dynamic(state, cand_products)   # Tier 2: SKU properties
             if slot is None:
                 slot = _next_slot_to_ask(state, cand_products)  # Tier 3: 关键词兜底
@@ -564,6 +569,27 @@ def _merge_search_state(state: dict, params: dict, message: str) -> dict:
         residue = residue.strip(" ，,、。.")
         if residue and not _detect_category(residue):
             state["want_attrs"] = _union(state["want_attrs"], [residue])
+
+    # 品牌补扫：规则快速路径（_quick_classify）不提取品牌，LLM 路径也可能漏填。
+    # 在 include_brands 为空时，从原始消息里直接匹配已知品牌名（含复合名如"Apple 苹果"的任意部分）。
+    # 只在首次未命中时补，不覆盖 LLM 已正确提取的品牌。
+    if not state["include_brands"]:
+        _scan = (raw_query + " " + message).strip()
+        _neg_markers = ("不要", "不买", "别", "除了", "不用", "不是", "不想")
+        for _brand in {p.brand for p in product_repo.all() if p.brand}:
+            # 支持复合品牌名各部分匹配（如 "苹果" 命中 "Apple 苹果"）
+            _parts = [_brand] + [_p for _p in _brand.split() if len(_p) >= 2]
+            _match_pos = -1
+            for _part in _parts:
+                _pos = _scan.find(_part)
+                if _pos != -1:
+                    _match_pos = _pos
+                    break
+            if _match_pos == -1:
+                continue
+            _window = _scan[max(0, _match_pos - 6):_match_pos]
+            if not any(_neg in _window for _neg in _neg_markers):
+                state["include_brands"] = _union(state["include_brands"], [_brand])
 
     # 同品类细化（加价格/品牌/属性约束）时清空 shown_ids，
     # 否则旧的展示 id 会把新约束下有效的候选全部排除，导致"换一批"无结果。
