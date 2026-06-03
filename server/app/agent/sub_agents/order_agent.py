@@ -56,7 +56,7 @@ class OrderAgent:
 
         # ── 阶段判断（按字段是否填充判断当前步骤）─────────
         if not order_info.get("confirmed_cart"):
-            async for e in self._handle_cart_confirm(message, cart, session_id, order_info):
+            async for e in self._handle_cart_confirm(message, cart, session_id, order_info, session):
                 yield e
 
         elif not order_info.get("receiver_name"):
@@ -77,7 +77,7 @@ class OrderAgent:
                 yield e
 
         elif not order_info.get("final_confirmed"):
-            async for e in self._handle_final_confirm(message, cart, session_id, order_info):
+            async for e in self._handle_final_confirm(message, cart, session_id, order_info, session):
                 yield e
 
     # ─────────────────────────────────────────────────────
@@ -85,7 +85,7 @@ class OrderAgent:
     # ─────────────────────────────────────────────────────
 
     async def _handle_cart_confirm(
-        self, message: str, cart: dict, session_id: str, order_info: dict
+        self, message: str, cart: dict, session_id: str, order_info: dict, session: dict
     ) -> AsyncIterator[str]:
         """
         进入下单流程时第一次调用：先展示购物车请用户确认。
@@ -224,7 +224,7 @@ class OrderAgent:
         ).to_sse()
 
     async def _handle_final_confirm(
-        self, message: str, cart: dict, session_id: str, order_info: dict
+        self, message: str, cart: dict, session_id: str, order_info: dict, session: dict
     ) -> AsyncIterator[str]:
         if any(kw in message for kw in _CANCEL_KEYWORDS):
             async for e in self._cancel_order(session_id, session):
