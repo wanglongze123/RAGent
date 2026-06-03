@@ -182,6 +182,9 @@ class OrderAgent:
         self, message: str, session_id: str, order_info: dict
     ) -> AsyncIterator[str]:
         name = message.strip()
+        if any(kw in name for kw in _CONFIRM_KEYWORDS | _CANCEL_KEYWORDS):
+            yield ev.text_delta("请直接输入收货人姓名，例如：张三。").to_sse()
+            return
         if len(name) < 2 or len(name) > 20:
             yield ev.text_delta("姓名长度不合适，请重新输入收货人姓名。").to_sse()
             return
