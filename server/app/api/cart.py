@@ -105,3 +105,12 @@ async def delete_cart_item(item_id: str, session_id: str):
 async def clear_cart(session_id: str):
     await db.cart_clear(session_id)
     return {"ok": True}
+
+
+# ───── 历史订单 ─────
+
+@router.get("/orders")
+async def get_orders(session_id: str):
+    """查询该会话的全部历史订单（含商品明细），按下单时间倒序。"""
+    orders = await db.list_orders(session_id)
+    return {"orders": orders}

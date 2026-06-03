@@ -500,6 +500,24 @@ async def get_used_addresses(session_id: str) -> list[dict]:
     return result
 
 
+async def list_orders(session_id: str) -> list[dict]:
+    """返回该会话的所有历史订单（含商品明细），按下单时间倒序。"""
+    async with aiosqlite.connect(settings.sqlite_db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM orders WHERE session_id = ? ORDER BY created_at DESC",
+            (session_id,),
+        ) as cursor:
+            orders = [dict(r) for r in await cursor.fetchall()]
+        for order in orders:
+            async with db.execute(
+                "SELECT * FROM order_items WHERE order_id = ?",
+                (order["order_id"],),
+            ) as cursor:
+                order["items"] = [dict(r) for r in await cursor.fetchall()]
+    return orders
+
+
 async def order_get(order_id: str) -> Optional[dict]:
     async with aiosqlite.connect(settings.sqlite_db_path) as db:
         db.row_factory = aiosqlite.Row
