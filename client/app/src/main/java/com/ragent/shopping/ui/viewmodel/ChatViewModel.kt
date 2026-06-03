@@ -213,11 +213,17 @@ class ChatViewModel(
 
     fun clearToast() = _uiState.update { it.copy(toastMessage = "") }
 
-    /** 用户提交收货信息表单 */
+    /** 用户提交收货信息表单（不显示用户气泡，避免个人信息裸露在对话里） */
     fun submitOrderForm(name: String, phone: String, address: String) {
         _uiState.update { it.copy(showOrderForm = false, orderFormAddresses = emptyList()) }
+        if (_uiState.value.isLoading) return
         val payload = """{"name":"${name.trim()}","phone":"${phone.trim()}","address":"${address.trim()}"}"""
-        sendMessage("ORDER_INFO:$payload")
+        viewModelScope.launch {
+            chatRepo.ensureSession()
+            _uiState.update { it.copy(isLoading = true) }
+            addStatus("正在思考...")
+            streamFromRepo { chatRepo.chat("ORDER_INFO:$payload") }
+        }
     }
 
     /** 用户关闭/取消收货信息表单（不显示用户气泡） */

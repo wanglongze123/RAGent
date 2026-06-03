@@ -103,6 +103,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -158,10 +159,12 @@ fun ChatScreen(
         if (drawerState.currentValue == DrawerValue.Open) viewModel.refreshSessions()
     }
 
-    // 自动滚动：新消息 → 平滑动画；流式 token 追加 → 即时滚动（避免动画堆积卡顿）
+    // 自动滚动：列表增大时（新消息到来）才滚到底，删除 clarification 时不触发上移
+    var prevMessageCount by remember { mutableIntStateOf(0) }
     LaunchedEffect(uiState.messages.size) {
-        if (uiState.messages.isNotEmpty())
+        if (uiState.messages.size > prevMessageCount && uiState.messages.isNotEmpty())
             listState.animateScrollToItem(uiState.messages.size - 1)
+        prevMessageCount = uiState.messages.size
     }
     val lastStreamingText = (uiState.messages.lastOrNull() as? ChatMessage.AiText)
         ?.takeIf { it.isStreaming }?.text
