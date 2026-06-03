@@ -924,9 +924,15 @@ def _build_where_filter(state: dict) -> dict | None:
     if state.get("price_min") is not None:
         conditions.append({"base_price": {"$gte": float(state["price_min"])}})
 
-    main_cat = _to_main_cat(state.get("category", ""))
-    if main_cat:
-        conditions.append({"category": main_cat})   # 直接等值，BM25/ChromaDB 均支持
+    cat = state.get("category", "")
+    if cat in _all_subcategories():
+        # state.category 本身就是精确 sub_category（帽子/面霜/跑步鞋…）→ 细粒度过滤
+        conditions.append({"sub_category": cat})
+    else:
+        # 宽泛词/别名 → 降级到主类目过滤（上衣/护肤品/数码…）
+        main_cat = _to_main_cat(cat)
+        if main_cat:
+            conditions.append({"category": main_cat})
 
     if not conditions:
         return None
