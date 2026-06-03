@@ -1,12 +1,9 @@
 package com.ragent.shopping.ui.screen
 
 import android.Manifest
-import android.app.Activity
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
-import android.speech.RecognizerIntent
 import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -71,7 +68,6 @@ import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.Badge
@@ -343,7 +339,6 @@ fun ChatScreen(
             // 输入栏
             ChatInputBar(
                 isLoading = uiState.isLoading,
-                isListening = isListening,
                 voiceInput = voiceInput,
                 onVoiceInputConsumed = { voiceInput = null },
                 pendingBitmap = pendingBitmap,
@@ -369,9 +364,6 @@ fun ChatScreen(
                     }
                 },
                 onGalleryClick = { imagePickerLauncher.launch("image/*") },
-                onVoiceClick = {
-                    scope.launch { snackbarHostState.showSnackbar("请使用键盘上的🎤语音按钮输入") }
-                },
             )
         }
     }
@@ -406,15 +398,13 @@ fun ChatScreen(
 @Composable
 private fun ChatInputBar(
     isLoading: Boolean,
-    isListening: Boolean = false,
-    voiceInput: String?,           // STT 识别结果，非 null 时填入输入框
+    voiceInput: String?,
     onVoiceInputConsumed: () -> Unit,
     pendingBitmap: android.graphics.Bitmap?,
     onSend: (String) -> Unit,
     onClearImage: () -> Unit,
     onCameraClick: () -> Unit,
     onGalleryClick: () -> Unit,
-    onVoiceClick: () -> Unit,
 ) {
     var inputText by remember { mutableStateOf("") }
 
@@ -532,28 +522,6 @@ private fun ChatInputBar(
                         if (canSend) { onSend(inputText.trim()); inputText = "" }
                     }),
                 )
-                // 麦克风按钮（录音中变红+脉冲动画）
-                if (inputText.isBlank() && pendingBitmap == null) {
-                    val micScale by animateFloatAsState(
-                        targetValue = if (isListening) 1.25f else 1f,
-                        animationSpec = if (isListening)
-                            infiniteRepeatable(tween(600), RepeatMode.Reverse)
-                        else tween(200),
-                        label = "mic_pulse",
-                    )
-                    IconButton(
-                        onClick = onVoiceClick,
-                        enabled = !isLoading,
-                        modifier = Modifier.size(36.dp),
-                    ) {
-                        Icon(
-                            Icons.Default.Mic,
-                            contentDescription = if (isListening) "正在录音…" else "语音输入",
-                            tint = if (isListening) Color.Red else BrandIndigo,
-                            modifier = Modifier.size(22.dp).graphicsLayer { scaleX = micScale; scaleY = micScale },
-                        )
-                    }
-                }
                 Spacer(Modifier.width(4.dp))
                 Box(
                     modifier = Modifier
