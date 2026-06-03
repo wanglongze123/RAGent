@@ -239,30 +239,17 @@ fun ChatScreen(
     }
 
     fun launchStt() {
-        // 策略1：RecognizerIntent 弹框（Google App 安装后可用）
-        val recognizerIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "说出您想搜索的商品…")
-        }
-        val canUseDialog = recognizerIntent.resolveActivity(context.packageManager) != null
-        if (canUseDialog) {
-            sttLauncher.launch(recognizerIntent)
-            return
-        }
-        // 策略2：SpeechRecognizer API（vivo 内置服务）
+        // 直接 launch RecognizerIntent，不用 resolveActivity 检查
+        // （Android 11+ resolveActivity 对未声明包返回 null，但 intent 仍可 launch）
         try {
-            speechRecognizer.setRecognitionListener(recognitionListener)
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
-                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                putExtra(RecognizerIntent.EXTRA_PROMPT, "说出您想搜索的商品…")
             }
-            isListening = true
-            speechRecognizer.startListening(intent)
-        } catch (e: Exception) {
-            isListening = false
-            scope.launch { snackbarHostState.showSnackbar("此设备不支持语音识别：${e.message}") }
+            sttLauncher.launch(intent)
+        } catch (e: android.content.ActivityNotFoundException) {
+            scope.launch { snackbarHostState.showSnackbar("未找到语音识别 App，请安装 Google") }
         }
     }
 
