@@ -183,7 +183,9 @@ class SearchAgent:
             return
 
         # ── 追问（自然语言问题 + 仅逃生按钮）──────────────────
-        state.setdefault("asked_slots", []).append(slot["name"])
+        asked_list = state.setdefault("asked_slots", [])
+        if slot["name"] not in asked_list:
+            asked_list.append(slot["name"])
         state["pending"] = {"slot": slot["name"], "kind": slot["kind"], "options": slot.get("options", [])}
         await db.update_search_state(session_id, state)
 

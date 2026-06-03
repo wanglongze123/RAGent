@@ -376,11 +376,13 @@ async def cart_update_quantity(
     quantity: int,
 ) -> Optional[dict]:
     async with aiosqlite.connect(settings.sqlite_db_path) as db:
-        await db.execute(
+        cursor = await db.execute(
             "UPDATE cart_items SET quantity = ? "
             "WHERE cart_item_id = ? AND session_id = ?",
             (quantity, cart_item_id, session_id),
         )
+        if cursor.rowcount == 0:
+            return None  # 记录不存在或不属于该 session
         await db.commit()
     return await _get_cart_item(cart_item_id)
 
