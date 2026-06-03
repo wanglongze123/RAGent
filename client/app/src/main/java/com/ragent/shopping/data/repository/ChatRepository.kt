@@ -146,15 +146,18 @@ class ChatRepository(
                 SseEventType.IMAGE_SEARCHING ->
                     ChatMessage.AiStatus(json.get("message")?.asString ?: "正在分析图片...")
 
-                SseEventType.TEXT_DELTA ->
-                    ChatMessage.AiText(text = json.get("text")?.asString ?: "")
+                SseEventType.TEXT_DELTA -> {
+                    val text = json.get("text")?.asString ?: ""
+                    if (text.isEmpty()) null else ChatMessage.AiText(text = text)
+                }
 
                 SseEventType.PRODUCT_CARD ->
                     ChatMessage.AiProductCard(product = gson.fromJson(json, Product::class.java))
 
                 SseEventType.PRODUCT_CARD_LIST -> {
                     val products = json.getAsJsonArray("products")
-                        .map { gson.fromJson(it, Product::class.java) }
+                        ?.mapNotNull { runCatching { gson.fromJson(it, Product::class.java) }.getOrNull() }
+                        ?: emptyList()
                     val searchType = json.get("search_type")?.asString ?: "text"
                     ChatMessage.AiProductList(products, searchType)
                 }
