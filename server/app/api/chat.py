@@ -72,7 +72,10 @@ async def chat_stream(req: ChatRequest):
             ):
                 yield event_str
         except Exception as e:
-            yield ev.error("INTERNAL_ERROR", str(e)).to_sse()
+            import traceback; traceback.print_exc()
+            yield ev.error("INTERNAL_ERROR", str(e)[:300]).to_sse()
+            # 补发 done，防止客户端 agentState 卡在 checkout 等中间态
+            yield ev.done(req.session_id, "browsing").to_sse()
 
     return StreamingResponse(
         event_stream(),
@@ -99,7 +102,9 @@ async def search_by_image(req: ImageSearchRequest):
             ):
                 yield event_str
         except Exception as e:
-            yield ev.error("INTERNAL_ERROR", str(e)).to_sse()
+            import traceback; traceback.print_exc()
+            yield ev.error("INTERNAL_ERROR", str(e)[:300]).to_sse()
+            yield ev.done(req.session_id, "browsing").to_sse()
 
     return StreamingResponse(
         event_stream(),
