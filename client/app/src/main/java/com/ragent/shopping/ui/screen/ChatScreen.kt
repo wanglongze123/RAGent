@@ -16,6 +16,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -191,31 +192,61 @@ fun ChatScreen(
     // ── STT（语音转文字）──────────────────────────────────────
     var voiceInput by remember { mutableStateOf<String?>(null) }
 
-    val sttLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val text = result.data
-                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-                ?.firstOrNull() ?: ""
-            if (text.isNotBlank()) voiceInput = text
+    // ── SpeechRecognizer（直接对接设备内置识别服务，兼容 vivo/OPPO 等无 Google 弹框的机型）──
+    var isListening by remember { mutableStateOf(false) }
+    val speechRecognizer = remember {
+        if (android.speech.SpeechRecognizer.isRecognitionAvailable(context))
+            android.speech.SpeechRecognizer.createSpeechRecognizer(context)
+        else null
+    }
+    DisposableEffect(speechRecognizer) {
+        onDispose { speechRecognizer?.destroy() }
+    }
+
+    val recognitionListener = remember {
+        object : android.speech.RecognitionListener {
+            override fun onReadyForSpeech(params: android.os.Bundle?) { }
+            override fun onBeginningOfSpeech() { }
+            override fun onRmsChanged(rmsdB: Float) { }
+            override fun onBufferReceived(buffer: ByteArray?) { }
+            override fun onEndOfSpeech() { isListening = false }
+            override fun onError(error: Int) {
+                isListening = false
+                if (error != android.speech.SpeechRecognizer.ERROR_NO_MATCH &&
+                    error != android.speech.SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                    scope.launch { snackbarHostState.showSnackbar("语音识别失败，请重试") }
+                }
+            }
+            override fun onResults(results: android.os.Bundle?) {
+                isListening = false
+                val text = results
+                    ?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull() ?: ""
+                if (text.isNotBlank()) voiceInput = text
+            }
+            override fun onPartialResults(partial: android.os.Bundle?) { }
+            override fun onEvent(eventType: Int, params: android.os.Bundle?) { }
         }
     }
 
     fun launchStt() {
-        try {
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
-                putExtra(RecognizerIntent.EXTRA_PROMPT, "说出您想搜索的商品…")
+        if (speechRecognizer == null) {
+            // 设备完全不支持，降级到 RecognizerIntent 弹框
+            try {
+                // (留作备用，通常不会走到这里)
+            } catch (_: Exception) {
+                scope.launch { snackbarHostState.showSnackbar("此设备不支持语音识别") }
             }
-            sttLauncher.launch(intent)
-        } catch (e: android.content.ActivityNotFoundException) {
-            // 设备未安装语音识别（部分国产机），提示用户
-            scope.launch {
-                snackbarHostState.showSnackbar("此设备不支持语音识别")
-            }
+            return
         }
+        speechRecognizer.setRecognitionListener(recognitionListener)
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        }
+        isListening = true
+        speechRecognizer.startListening(intent)
     }
 
     val sttPermLauncher = rememberLauncherForActivityResult(
@@ -369,6 +400,7 @@ fun ChatScreen(
             // 输入栏
             ChatInputBar(
                 isLoading = uiState.isLoading,
+                isListening = isListening,
                 voiceInput = voiceInput,
                 onVoiceInputConsumed = { voiceInput = null },
                 pendingBitmap = pendingBitmap,
@@ -434,6 +466,7 @@ fun ChatScreen(
 @Composable
 private fun ChatInputBar(
     isLoading: Boolean,
+    isListening: Boolean = false,
     voiceInput: String?,           // STT 识别结果，非 null 时填入输入框
     onVoiceInputConsumed: () -> Unit,
     pendingBitmap: android.graphics.Bitmap?,
@@ -559,8 +592,15 @@ private fun ChatInputBar(
                         if (canSend) { onSend(inputText.trim()); inputText = "" }
                     }),
                 )
-                // 麦克风按钮（输入框为空时显示，有文字时隐藏避免遮挡发送按钮）
+                // 麦克风按钮（录音中变红+脉冲动画）
                 if (inputText.isBlank() && pendingBitmap == null) {
+                    val micScale by animateFloatAsState(
+                        targetValue = if (isListening) 1.25f else 1f,
+                        animationSpec = if (isListening)
+                            infiniteRepeatable(tween(600), RepeatMode.Reverse)
+                        else tween(200),
+                        label = "mic_pulse",
+                    )
                     IconButton(
                         onClick = onVoiceClick,
                         enabled = !isLoading,
@@ -568,9 +608,9 @@ private fun ChatInputBar(
                     ) {
                         Icon(
                             Icons.Default.Mic,
-                            contentDescription = "语音输入",
-                            tint = BrandIndigo,
-                            modifier = Modifier.size(22.dp),
+                            contentDescription = if (isListening) "正在录音…" else "语音输入",
+                            tint = if (isListening) Color.Red else BrandIndigo,
+                            modifier = Modifier.size(22.dp).graphicsLayer { scaleX = micScale; scaleY = micScale },
                         )
                     }
                 }
