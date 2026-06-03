@@ -192,70 +192,9 @@ fun ChatScreen(
     // ── STT（语音转文字）──────────────────────────────────────
     var voiceInput by remember { mutableStateOf<String?>(null) }
 
-    // ── STT：优先用 RecognizerIntent 弹框（Google App），降级用 SpeechRecognizer API ──
-    var isListening by remember { mutableStateOf(false) }
-
-    // SpeechRecognizer 实例（不做 isRecognitionAvailable 检查，直接创建并尝试）
-    val speechRecognizer = remember {
-        android.speech.SpeechRecognizer.createSpeechRecognizer(context)
-    }
-    DisposableEffect(speechRecognizer) {
-        onDispose { speechRecognizer.destroy() }
-    }
-
-    // STT 弹框方式（RecognizerIntent）
-    val sttLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val text = result.data
-                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-                ?.firstOrNull() ?: ""
-            if (text.isNotBlank()) voiceInput = text
-        }
-    }
-
-    val recognitionListener = remember {
-        object : android.speech.RecognitionListener {
-            override fun onReadyForSpeech(params: android.os.Bundle?) { }
-            override fun onBeginningOfSpeech() { }
-            override fun onRmsChanged(rmsdB: Float) { }
-            override fun onBufferReceived(buffer: ByteArray?) { }
-            override fun onEndOfSpeech() { isListening = false }
-            override fun onError(error: Int) {
-                isListening = false
-                scope.launch { snackbarHostState.showSnackbar("语音识别失败 (error=$error)，请重试") }
-            }
-            override fun onResults(results: android.os.Bundle?) {
-                isListening = false
-                val text = results
-                    ?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)
-                    ?.firstOrNull() ?: ""
-                if (text.isNotBlank()) voiceInput = text
-            }
-            override fun onPartialResults(p: android.os.Bundle?) { }
-            override fun onEvent(t: Int, p: android.os.Bundle?) { }
-        }
-    }
-
-    fun launchStt() {
-        // 直接 launch RecognizerIntent，不用 resolveActivity 检查
-        // （Android 11+ resolveActivity 对未声明包返回 null，但 intent 仍可 launch）
-        try {
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
-                putExtra(RecognizerIntent.EXTRA_PROMPT, "说出您想搜索的商品…")
-            }
-            sttLauncher.launch(intent)
-        } catch (e: android.content.ActivityNotFoundException) {
-            scope.launch { snackbarHostState.showSnackbar("未找到语音识别 App，请安装 Google") }
-        }
-    }
-
-    val sttPermLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted -> if (granted) launchStt() }
+    // STT：由系统键盘自带的语音输入完成（vivo/OPPO等国产机均支持）
+    // 不再需要自定义麦克风按钮
+    val isListening = false  // 保留占位，避免 ChatInputBar 签名变动
 
     // ── pending 图片状态 ──────────────────────────────────────
     // pending 图片状态：选好图后先放在输入栏，等用户点发送
@@ -431,10 +370,7 @@ fun ChatScreen(
                 },
                 onGalleryClick = { imagePickerLauncher.launch("image/*") },
                 onVoiceClick = {
-                    val hasPerm = ContextCompat.checkSelfPermission(
-                        context, Manifest.permission.RECORD_AUDIO
-                    ) == PackageManager.PERMISSION_GRANTED
-                    if (hasPerm) launchStt() else sttPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    scope.launch { snackbarHostState.showSnackbar("请使用键盘上的🎤语音按钮输入") }
                 },
             )
         }
