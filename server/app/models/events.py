@@ -18,6 +18,7 @@ class EventType(str, Enum):
     CART_UPDATE = "cart_update"
     CLARIFICATION = "clarification"
     IMAGE_SEARCHING = "image_searching"
+    ORDER_FORM = "order_form"
     ERROR = "error"
     DONE = "done"
 
@@ -128,6 +129,14 @@ def clarification(question: str, options: list[str]) -> SSEEvent:
     return SSEEvent(
         type=EventType.CLARIFICATION,
         data={"question": question, "options": options},
+    )
+
+
+def order_form(saved_addresses: list[dict]) -> SSEEvent:
+    """弹起收货信息表单，可附带历史地址供前端一键填入（原始手机号，前端自行脱敏）。"""
+    return SSEEvent(
+        type=EventType.ORDER_FORM,
+        data={"saved_addresses": saved_addresses},
     )
 
 
