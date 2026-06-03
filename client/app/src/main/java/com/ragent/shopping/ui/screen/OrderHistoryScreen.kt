@@ -1,26 +1,19 @@
 package com.ragent.shopping.ui.screen
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -177,21 +170,25 @@ fun OrderHistoryScreen(
     }
 }
 
-// ── 单张订单卡片（可折叠） ─────────────────────────────────────
+// ── 单张订单卡片（淘宝风格：商品行 + 底部合计）─────────────────
+
+// 商品缩略图：用渐变色块 + 首字替代真实图片
+private val THUMB_GRADIENTS = listOf(
+    listOf(Color(0xFF5C6EFF), Color(0xFF9B5CFF)),
+    listOf(Color(0xFFFF6B6B), Color(0xFFFF8E53)),
+    listOf(Color(0xFF43CBFF), Color(0xFF9708CC)),
+    listOf(Color(0xFF11998E), Color(0xFF38EF7D)),
+    listOf(Color(0xFFF7971E), Color(0xFFFFD200)),
+)
 
 @Composable
 private fun OrderCard(order: Order) {
-    var expanded by remember { mutableStateOf(false) }
-    val chevronAngle by animateFloatAsState(
-        targetValue = if (expanded) 180f else 0f,
-        animationSpec = tween(200),
-        label = "chevron",
-    )
-    // 时间格式化（"2024-06-03T12:34:56" → "2024-06-03 12:34"）
+    // 时间格式化："2024-06-03T12:34:56" → "2024-06-03 12:34"
     val dateStr = order.createdAt.replace("T", " ").take(16)
     val maskedPhone = if (order.receiverPhone.length == 11)
         "${order.receiverPhone.take(3)}****${order.receiverPhone.takeLast(4)}"
     else order.receiverPhone
+    val itemCount = order.items.sumOf { it.quantity }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -200,152 +197,145 @@ private fun OrderCard(order: Order) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Column {
-            // ── 订单头部 ──────────────────────────────────
+            // ── 顶部状态栏：日期 + 已完成 ──────────────────
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { expanded = !expanded }
-                    .padding(16.dp),
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                // 状态图标
-                Icon(
-                    Icons.Default.CheckCircle,
-                    contentDescription = null,
-                    tint = Color(0xFF4CAF50),
-                    modifier = Modifier.size(22.dp),
+                Text(
+                    dateStr,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Column(modifier = Modifier.weight(1f)) {
+                // 状态 chip
+                Box(
+                    modifier = Modifier
+                        .background(Color(0xFF4CAF50).copy(alpha = 0.12f), RoundedCornerShape(20.dp))
+                        .padding(horizontal = 10.dp, vertical = 3.dp),
+                ) {
                     Text(
-                        text = order.orderId,
+                        "✓  已完成",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = Color(0xFF2E7D32),
+                        fontWeight = FontWeight.SemiBold,
                     )
-                    Spacer(Modifier.height(2.dp))
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+            // ── 商品列表 ──────────────────────────────────
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                order.items.forEachIndexed { idx, item ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        // 渐变缩略图（首字母）
+                        val grad = THUMB_GRADIENTS[idx % THUMB_GRADIENTS.size]
+                        Box(
+                            modifier = Modifier
+                                .size(56.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Brush.linearGradient(grad)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = item.title.take(1),
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 20.sp,
+                            )
+                        }
+                        // 商品信息
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                item.title,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                lineHeight = 20.sp,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "×${item.quantity}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        // 单项价格
+                        Text(
+                            "¥%.2f".format(item.unitPrice * item.quantity),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+            // ── 底部：件数 + 实付款 ──────────────────────
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    "共 $itemCount 件",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = dateStr,
+                        "实付款 ",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Text(
+                        "¥%.2f".format(order.totalPrice),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFE53935),
+                    )
                 }
-                // 金额
-                Text(
-                    text = "¥%.2f".format(order.totalPrice),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.error,
-                )
-                // 折叠箭头
-                Icon(
-                    Icons.Default.ExpandMore,
-                    contentDescription = if (expanded) "收起" else "展开",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp).rotate(chevronAngle),
-                )
             }
 
-            // ── 折叠详情 ──────────────────────────────────
-            AnimatedVisibility(
-                visible = expanded,
-                enter = expandVertically(tween(200)),
-                exit  = shrinkVertically(tween(200)),
+            // ── 收货地址（折叠条，仅显示一行）───────────────
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Column {
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-                    // 收货信息
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(3.dp),
-                    ) {
-                        Text(
-                            "收货信息",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            "${order.receiverName}  $maskedPhone",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        Text(
-                            order.receiverAddress,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-                    // 商品明细
-                    Column(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        order.items.forEach { item ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    item.title,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.weight(1f),
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Column(horizontalAlignment = Alignment.End) {
-                                    Text(
-                                        "×${item.quantity}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                    Text(
-                                        "¥%.2f".format(item.unitPrice * item.quantity),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        fontWeight = FontWeight.Medium,
-                                        color = MaterialTheme.colorScheme.error,
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // 订单状态标签
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp)
-                            .padding(bottom = 12.dp),
-                        horizontalArrangement = Arrangement.End,
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .background(
-                                    Color(0xFF4CAF50).copy(alpha = 0.12f),
-                                    RoundedCornerShape(6.dp),
-                                )
-                                .padding(horizontal = 10.dp, vertical = 4.dp),
-                        ) {
-                            Text(
-                                "✓ 已确认",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color(0xFF2E7D32),
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 11.sp,
-                            )
-                        }
-                    }
-                }
+                Icon(
+                    Icons.Default.LocationOn,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(14.dp),
+                )
+                Text(
+                    "${order.receiverName}  $maskedPhone  ${order.receiverAddress}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
             }
         }
     }
