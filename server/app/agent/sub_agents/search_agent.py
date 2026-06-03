@@ -758,7 +758,7 @@ def _is_slot_answer(msg: str, pending: dict) -> bool:
         pmin, pmax = _parse_price_option(msg)
         return pmin is not None or pmax is not None
     if kind == "brand":
-        return any(b in msg or msg in b for b in options)
+        return any(b in msg for b in options)
     return False
 
 
