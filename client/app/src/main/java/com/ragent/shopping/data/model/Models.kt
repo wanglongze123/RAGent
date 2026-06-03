@@ -209,6 +209,33 @@ data class SavedAddress(
     @SerializedName("receiver_address") val address: String = "",
 )
 
+// ===== 历史订单 =====
+
+data class OrderItem(
+    @SerializedName("order_id")    val orderId: String = "",
+    @SerializedName("product_id")  val productId: String = "",
+    @SerializedName("sku_id")      val skuId: String = "",
+    @SerializedName("title")       val title: String = "",
+    @SerializedName("quantity")    val quantity: Int = 1,
+    @SerializedName("unit_price")  val unitPrice: Double = 0.0,
+)
+
+data class Order(
+    @SerializedName("order_id")         val orderId: String = "",
+    @SerializedName("session_id")       val sessionId: String = "",
+    @SerializedName("status")           val status: String = "",
+    @SerializedName("receiver_name")    val receiverName: String = "",
+    @SerializedName("receiver_phone")   val receiverPhone: String = "",
+    @SerializedName("receiver_address") val receiverAddress: String = "",
+    @SerializedName("total_price")      val totalPrice: Double = 0.0,
+    @SerializedName("created_at")       val createdAt: String = "",
+    @SerializedName("items")            val items: List<OrderItem> = emptyList(),
+)
+
+data class OrderListResponse(
+    @SerializedName("orders") val orders: List<Order> = emptyList(),
+)
+
 // ===== Agent 状态 =====
 
 enum class AgentState(val value: String) {

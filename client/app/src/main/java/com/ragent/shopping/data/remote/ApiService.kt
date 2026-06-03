@@ -5,6 +5,7 @@ import com.ragent.shopping.data.model.AddCartRequest
 import com.ragent.shopping.data.model.CartItem
 import com.ragent.shopping.data.model.CartResponse
 import com.ragent.shopping.data.model.MessagesResponse
+import com.ragent.shopping.data.model.OrderListResponse
 import com.ragent.shopping.data.model.Product
 import com.ragent.shopping.data.model.SessionListResponse
 import com.ragent.shopping.data.model.SessionResponse
@@ -133,6 +134,19 @@ class ApiService(private val gson: Gson = Gson()) {
             .build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw Exception("清空失败: ${response.code}")
+        }
+    }
+
+    // ===== 历史订单 =====
+
+    suspend fun getOrders(sessionId: String): OrderListResponse = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("$base/api/v1/orders?session_id=$sessionId")
+            .get()
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw Exception("获取订单失败: ${response.code}")
+            gson.fromJson(response.body!!.string(), OrderListResponse::class.java)
         }
     }
 }

@@ -67,6 +67,7 @@ import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -146,6 +147,7 @@ import java.io.ByteArrayOutputStream
 fun ChatScreen(
     onNavigateToProduct: (String) -> Unit,
     onNavigateToCart: () -> Unit,
+    onNavigateToOrders: () -> Unit = {},
     viewModel: ChatViewModel = viewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -271,6 +273,13 @@ fun ChatScreen(
                         }
                     },
                     actions = {
+                        IconButton(onClick = onNavigateToOrders) {
+                            Icon(
+                                Icons.Default.ReceiptLong,
+                                contentDescription = "我的订单",
+                                tint = Color.White,
+                            )
+                        }
                         BadgedBox(
                             badge = {
                                 if (uiState.cartBadgeCount > 0) {

@@ -11,6 +11,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.ragent.shopping.ui.screen.CartScreen
 import com.ragent.shopping.ui.screen.ChatScreen
+import com.ragent.shopping.ui.screen.OrderHistoryScreen
 import com.ragent.shopping.ui.screen.ProductDetailScreen
 import com.ragent.shopping.ui.viewmodel.ChatViewModel
 
@@ -31,6 +32,9 @@ fun AppNavigation() {
                 onNavigateToCart = {
                     navController.navigate("cart")
                 },
+                onNavigateToOrders = {
+                    navController.navigate("orders")
+                },
             )
         }
 
@@ -50,8 +54,14 @@ fun AppNavigation() {
             CartScreen(
                 sessionId = uiState.sessionId,
                 onBack = { navController.popBackStack() },
-                // 购物车页增删改后回传最新数量/金额，保持对话页顶栏角标一致
                 onCartChanged = { count, price -> chatViewModel.setCartBadge(count, price) },
+            )
+        }
+
+        composable("orders") {
+            OrderHistoryScreen(
+                sessionId = uiState.sessionId,
+                onBack = { navController.popBackStack() },
             )
         }
     }
