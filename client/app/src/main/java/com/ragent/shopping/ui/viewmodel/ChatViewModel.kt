@@ -111,7 +111,7 @@ class ChatViewModel(
         }
     }
 
-    // ===== 点击反问选项 =====
+    // ===== 点击反问选项（不在对话流中显示用户气泡）=====
 
     fun selectClarification(option: String) {
         // 移除最后一条 clarification，避免选完后留着占空白
@@ -120,7 +120,14 @@ class ChatViewModel(
             if (idx >= 0) state.copy(messages = state.messages.toMutableList().apply { removeAt(idx) })
             else state
         }
-        sendMessage(option)
+        // 直接发送到后端，不追加用户气泡——点按钮不等于打字
+        if (_uiState.value.isLoading) return
+        viewModelScope.launch {
+            chatRepo.ensureSession()
+            _uiState.update { it.copy(isLoading = true) }
+            addStatus("正在思考...")
+            streamFromRepo { chatRepo.chat(option) }
+        }
     }
 
     // 旧接口兼容（供外部直接传 base64，不带 bitmap 预览）
@@ -213,10 +220,16 @@ class ChatViewModel(
         sendMessage("ORDER_INFO:$payload")
     }
 
-    /** 用户关闭/取消收货信息表单 */
+    /** 用户关闭/取消收货信息表单（不显示用户气泡） */
     fun dismissOrderForm() {
         _uiState.update { it.copy(showOrderForm = false, orderFormAddresses = emptyList()) }
-        sendMessage("取消")
+        if (_uiState.value.isLoading) return
+        viewModelScope.launch {
+            chatRepo.ensureSession()
+            _uiState.update { it.copy(isLoading = true) }
+            addStatus("正在思考...")
+            streamFromRepo { chatRepo.chat("取消") }
+        }
     }
 
     /**
