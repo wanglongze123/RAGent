@@ -53,7 +53,11 @@ class ChatViewModel(
     init {
         viewModelScope.launch {
             _uiState.update { it.copy(isRestoring = true) }
-            val sid = chatRepo.ensureSession()
+            val sid = runCatching { chatRepo.ensureSession() }.getOrNull()
+                ?: run {
+                    _uiState.update { it.copy(isRestoring = false) }
+                    return@launch   // 网络不通时优雅降级，不崩溃
+                }
             // 恢复该会话历史消息 + 购物车角标（重启续上下文）。失败兜底为空，不阻塞首屏。
             val history = runCatching { chatRepo.loadHistory(sid) }.getOrDefault(emptyList())
             val cart = runCatching { chatRepo.getCart() }.getOrNull()
