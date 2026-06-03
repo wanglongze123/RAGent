@@ -336,7 +336,7 @@ class SearchAgent:
                     prompt=(
                         "请分析这张商品图，返回 JSON，字段：\n"
                         "1. category: 商品所属类目，只能从以下选项选一个："
-                        "「美妆护肤」「数码电子」「服饰运动」「食品生活」，不确定填 null\n"
+                        "「美妆护肤」「数码电子」「服饰运动」「食品饮料」，不确定填 null\n"
                         "2. ocr_text: 图中所有可见文字（品牌名、型号、产品名等），没有文字填空字符串\n"
                         "只返回 JSON，不要解释。示例：{\"category\":\"数码电子\",\"ocr_text\":\"iPhone 15 Pro\"}"
                     ),
@@ -354,7 +354,7 @@ class SearchAgent:
             hybrid_retriever.retrieve_by_image(image_base64=image_base64, top_k=_FETCH_K, where=where),
         )
 
-        _VALID = {"美妆护肤", "数码电子", "服饰运动", "食品生活"}
+        _VALID = {"美妆护肤", "数码电子", "服饰运动", "食品饮料"}
         if vlm_category and vlm_category in _VALID:
             filtered = [r for r in ranked if r.get("metadata", {}).get("category") == vlm_category]
             ranked = filtered or ranked
