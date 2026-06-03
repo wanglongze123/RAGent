@@ -444,8 +444,13 @@ _CATEGORY_ALIASES: dict[str, str] = {
 }
 
 
+_SUBCATEGORIES_CACHE: set[str] | None = None
+
 def _all_subcategories() -> set[str]:
-    return {p.sub_category for p in product_repo.all()}
+    global _SUBCATEGORIES_CACHE
+    if _SUBCATEGORIES_CACHE is None:
+        _SUBCATEGORIES_CACHE = {p.sub_category for p in product_repo.all()}
+    return _SUBCATEGORIES_CACHE
 
 
 # 否定前缀：若品类词紧跟在这些词之后（窗口内），视为「排除」而非「想要」，不取作品类
@@ -1110,11 +1115,16 @@ def _has_preferences(state: dict) -> bool:
     )
 
 
+_SUB_TO_MAIN_CACHE: dict[str, str] | None = None
+
 def _sub_to_main_cat(sub_cat: str) -> str:
-    for p in product_repo.all():
-        if p.sub_category == sub_cat:
-            return p.category
-    return ""
+    global _SUB_TO_MAIN_CACHE
+    if _SUB_TO_MAIN_CACHE is None:
+        _SUB_TO_MAIN_CACHE = {}
+        for p in product_repo.all():
+            if p.sub_category not in _SUB_TO_MAIN_CACHE:
+                _SUB_TO_MAIN_CACHE[p.sub_category] = p.category
+    return _SUB_TO_MAIN_CACHE.get(sub_cat, "")
 
 
 def _invitation_examples(sub_cat: str) -> str:
