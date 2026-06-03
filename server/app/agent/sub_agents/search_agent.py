@@ -392,8 +392,7 @@ class SearchAgent:
             products=[
                 {"product_id": p.product_id, "title": p.display_title,
                  "brand": p.brand, "image_url": p.image_url,
-                 "price": p.base_price, "sub_category": p.sub_category,
-                 "similarity_score": round(score_map.get(p.product_id, 0.0), 4)}
+                 "price": p.base_price, "sub_category": p.sub_category}
                 for p in shown
             ],
             search_type="image",
