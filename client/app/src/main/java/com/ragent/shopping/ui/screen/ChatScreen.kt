@@ -192,15 +192,27 @@ fun ChatScreen(
     // ── STT（语音转文字）──────────────────────────────────────
     var voiceInput by remember { mutableStateOf<String?>(null) }
 
-    // ── SpeechRecognizer（直接对接设备内置识别服务，兼容 vivo/OPPO 等无 Google 弹框的机型）──
+    // ── STT：优先用 RecognizerIntent 弹框（Google App），降级用 SpeechRecognizer API ──
     var isListening by remember { mutableStateOf(false) }
+
+    // SpeechRecognizer 实例（不做 isRecognitionAvailable 检查，直接创建并尝试）
     val speechRecognizer = remember {
-        if (android.speech.SpeechRecognizer.isRecognitionAvailable(context))
-            android.speech.SpeechRecognizer.createSpeechRecognizer(context)
-        else null
+        android.speech.SpeechRecognizer.createSpeechRecognizer(context)
     }
     DisposableEffect(speechRecognizer) {
-        onDispose { speechRecognizer?.destroy() }
+        onDispose { speechRecognizer.destroy() }
+    }
+
+    // STT 弹框方式（RecognizerIntent）
+    val sttLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val text = result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull() ?: ""
+            if (text.isNotBlank()) voiceInput = text
+        }
     }
 
     val recognitionListener = remember {
@@ -212,10 +224,7 @@ fun ChatScreen(
             override fun onEndOfSpeech() { isListening = false }
             override fun onError(error: Int) {
                 isListening = false
-                if (error != android.speech.SpeechRecognizer.ERROR_NO_MATCH &&
-                    error != android.speech.SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
-                    scope.launch { snackbarHostState.showSnackbar("语音识别失败，请重试") }
-                }
+                scope.launch { snackbarHostState.showSnackbar("语音识别失败 (error=$error)，请重试") }
             }
             override fun onResults(results: android.os.Bundle?) {
                 isListening = false
@@ -224,29 +233,37 @@ fun ChatScreen(
                     ?.firstOrNull() ?: ""
                 if (text.isNotBlank()) voiceInput = text
             }
-            override fun onPartialResults(partial: android.os.Bundle?) { }
-            override fun onEvent(eventType: Int, params: android.os.Bundle?) { }
+            override fun onPartialResults(p: android.os.Bundle?) { }
+            override fun onEvent(t: Int, p: android.os.Bundle?) { }
         }
     }
 
     fun launchStt() {
-        if (speechRecognizer == null) {
-            // 设备完全不支持，降级到 RecognizerIntent 弹框
-            try {
-                // (留作备用，通常不会走到这里)
-            } catch (_: Exception) {
-                scope.launch { snackbarHostState.showSnackbar("此设备不支持语音识别") }
-            }
-            return
-        }
-        speechRecognizer.setRecognitionListener(recognitionListener)
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+        // 策略1：RecognizerIntent 弹框（Google App 安装后可用）
+        val recognizerIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "说出您想搜索的商品…")
         }
-        isListening = true
-        speechRecognizer.startListening(intent)
+        val canUseDialog = recognizerIntent.resolveActivity(context.packageManager) != null
+        if (canUseDialog) {
+            sttLauncher.launch(recognizerIntent)
+            return
+        }
+        // 策略2：SpeechRecognizer API（vivo 内置服务）
+        try {
+            speechRecognizer.setRecognitionListener(recognitionListener)
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            }
+            isListening = true
+            speechRecognizer.startListening(intent)
+        } catch (e: Exception) {
+            isListening = false
+            scope.launch { snackbarHostState.showSnackbar("此设备不支持语音识别：${e.message}") }
+        }
     }
 
     val sttPermLauncher = rememberLauncherForActivityResult(
