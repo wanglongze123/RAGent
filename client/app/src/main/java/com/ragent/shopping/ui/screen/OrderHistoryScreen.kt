@@ -170,16 +170,7 @@ fun OrderHistoryScreen(
     }
 }
 
-// ── 单张订单卡片（淘宝风格：商品行 + 底部合计）─────────────────
-
-// 商品缩略图：用渐变色块 + 首字替代真实图片
-private val THUMB_GRADIENTS = listOf(
-    listOf(Color(0xFF5C6EFF), Color(0xFF9B5CFF)),
-    listOf(Color(0xFFFF6B6B), Color(0xFFFF8E53)),
-    listOf(Color(0xFF43CBFF), Color(0xFF9708CC)),
-    listOf(Color(0xFF11998E), Color(0xFF38EF7D)),
-    listOf(Color(0xFFF7971E), Color(0xFFFFD200)),
-)
+// ── 单张订单卡片 ───────────────────────────────────────────────
 
 @Composable
 private fun OrderCard(order: Order) {
@@ -227,56 +218,30 @@ private fun OrderCard(order: Order) {
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 
-            // ── 商品列表 ──────────────────────────────────
+            // ── 商品列表（名称 + 数量，价格统一在底部合计处展示）──
             Column(
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                order.items.forEachIndexed { idx, item ->
+                order.items.forEach { item ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        // 渐变缩略图（首字母）
-                        val grad = THUMB_GRADIENTS[idx % THUMB_GRADIENTS.size]
-                        Box(
-                            modifier = Modifier
-                                .size(56.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(Brush.linearGradient(grad)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                text = item.title.take(1),
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 20.sp,
-                            )
-                        }
-                        // 商品信息
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                item.title,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                                lineHeight = 20.sp,
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                "×${item.quantity}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        // 单项价格
                         Text(
-                            "¥%.2f".format(item.unitPrice * item.quantity),
+                            item.title,
                             style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            lineHeight = 20.sp,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            "×${item.quantity}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
