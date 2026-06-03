@@ -15,6 +15,7 @@ enum class SseEventType(val value: String) {
     CART_UPDATE("cart_update"),
     CLARIFICATION("clarification"),
     IMAGE_SEARCHING("image_searching"),
+    ORDER_FORM("order_form"),
     ERROR("error"),
     DONE("done"),
     UNKNOWN("unknown");
@@ -195,7 +196,18 @@ sealed class ChatMessage {
 
     // 本轮回复结束（不显示，更新 agentState）
     data class InternalDone(val agentState: String) : ChatMessage()
+
+    // 弹起收货信息表单（不显示，触发 BottomSheet）
+    data class InternalOrderForm(val savedAddresses: List<SavedAddress> = emptyList()) : ChatMessage()
 }
+
+// ===== 收货地址（历史地址快填）=====
+
+data class SavedAddress(
+    @SerializedName("receiver_name") val name: String = "",
+    @SerializedName("receiver_phone") val phone: String = "",     // 明文，前端脱敏显示
+    @SerializedName("receiver_address") val address: String = "",
+)
 
 // ===== Agent 状态 =====
 

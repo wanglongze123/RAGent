@@ -31,6 +31,9 @@ data class ChatUiState(
     // 会话列表（抽屉）与历史恢复中标志
     val sessions: List<SessionSummary> = emptyList(),
     val isRestoring: Boolean = false,
+    // 收货信息表单 BottomSheet
+    val showOrderForm: Boolean = false,
+    val orderFormAddresses: List<com.ragent.shopping.data.model.SavedAddress> = emptyList(),
 )
 
 class ChatViewModel(
@@ -203,6 +206,19 @@ class ChatViewModel(
 
     fun clearToast() = _uiState.update { it.copy(toastMessage = "") }
 
+    /** 用户提交收货信息表单 */
+    fun submitOrderForm(name: String, phone: String, address: String) {
+        _uiState.update { it.copy(showOrderForm = false, orderFormAddresses = emptyList()) }
+        val payload = """{"name":"${name.trim()}","phone":"${phone.trim()}","address":"${address.trim()}"}"""
+        sendMessage("ORDER_INFO:$payload")
+    }
+
+    /** 用户关闭/取消收货信息表单 */
+    fun dismissOrderForm() {
+        _uiState.update { it.copy(showOrderForm = false, orderFormAddresses = emptyList()) }
+        sendMessage("取消")
+    }
+
     /**
      * 同步购物车角标 —— 供购物车页（CartScreen）增删改后回传最新数量/金额。
      * 购物车页用的是独立的 CartViewModel，对话页顶栏角标读的是这里的 cartBadgeCount，
@@ -292,6 +308,9 @@ class ChatViewModel(
 
                 is ChatMessage.InternalDone ->
                     state.copy(agentState = AgentState.from(event.agentState))
+
+                is ChatMessage.InternalOrderForm ->
+                    state.copy(showOrderForm = true, orderFormAddresses = event.savedAddresses)
 
                 else -> state
             }

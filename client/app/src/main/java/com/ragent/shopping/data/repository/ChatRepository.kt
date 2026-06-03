@@ -10,6 +10,7 @@ import com.ragent.shopping.data.model.ComparisonTable
 import com.ragent.shopping.data.model.CartResponse
 import com.ragent.shopping.data.model.ImageSearchRequest
 import com.ragent.shopping.data.model.Product
+import com.ragent.shopping.data.model.SavedAddress
 import com.ragent.shopping.data.model.SessionSummary
 import com.ragent.shopping.data.model.SseEventType
 import com.ragent.shopping.data.local.SessionPrefs
@@ -191,6 +192,13 @@ class ChatRepository(
                         code = json.get("code")?.asString ?: "ERROR",
                         message = json.get("message")?.asString ?: "未知错误",
                     )
+
+                SseEventType.ORDER_FORM -> {
+                    val addresses = json.getAsJsonArray("saved_addresses")
+                        ?.mapNotNull { runCatching { gson.fromJson(it, SavedAddress::class.java) }.getOrNull() }
+                        ?: emptyList()
+                    ChatMessage.InternalOrderForm(addresses)
+                }
 
                 SseEventType.UNKNOWN -> null
             }

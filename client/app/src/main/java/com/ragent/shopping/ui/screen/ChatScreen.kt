@@ -355,6 +355,17 @@ fun ChatScreen(
             },
         )
     }
+
+    // 收货信息表单底部弹层（下单流程）
+    if (uiState.showOrderForm) {
+        OrderFormBottomSheet(
+            savedAddresses = uiState.orderFormAddresses,
+            onSubmit = { name, phone, address ->
+                viewModel.submitOrderForm(name, phone, address)
+            },
+            onDismiss = viewModel::dismissOrderForm,
+        )
+    }
 }
 
 @Composable
