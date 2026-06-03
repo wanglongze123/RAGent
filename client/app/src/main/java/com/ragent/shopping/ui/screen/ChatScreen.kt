@@ -103,7 +103,6 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -159,13 +158,12 @@ fun ChatScreen(
         if (drawerState.currentValue == DrawerValue.Open) viewModel.refreshSessions()
     }
 
-    // 自动滚动：列表增大时（新消息到来）才滚到底，删除 clarification 时不触发上移
-    var prevMessageCount by remember { mutableIntStateOf(0) }
-    LaunchedEffect(uiState.messages.size) {
-        if (uiState.messages.size > prevMessageCount && uiState.messages.isNotEmpty())
+    // 自动滚动：ViewModel 每次有新内容出现就 +1 scrollTick，这里统一响应
+    LaunchedEffect(uiState.scrollTick) {
+        if (uiState.scrollTick > 0 && uiState.messages.isNotEmpty())
             listState.animateScrollToItem(uiState.messages.size - 1)
-        prevMessageCount = uiState.messages.size
     }
+    // 流式 token 逐字追加时即时跟滚（避免动画堆积卡顿）
     val lastStreamingText = (uiState.messages.lastOrNull() as? ChatMessage.AiText)
         ?.takeIf { it.isStreaming }?.text
     LaunchedEffect(lastStreamingText) {

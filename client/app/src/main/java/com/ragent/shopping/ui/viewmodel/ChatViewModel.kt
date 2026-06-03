@@ -32,6 +32,8 @@ data class ChatUiState(
     // 会话列表（抽屉）与历史恢复中标志
     val sessions: List<SessionSummary> = emptyList(),
     val isRestoring: Boolean = false,
+    // 自动滚到底的信号：每次有新内容出现就 +1，ChatScreen 监听此值
+    val scrollTick: Int = 0,
     // 收货信息表单 BottomSheet
     val showOrderForm: Boolean = false,
     val orderFormAddresses: List<com.ragent.shopping.data.model.SavedAddress> = emptyList(),
@@ -258,14 +260,13 @@ class ChatViewModel(
 
     private fun addStatus(msg: String) {
         _uiState.update { state ->
-            // 替换已有 status，避免堆积
             val idx = state.messages.indexOfLast { it is ChatMessage.AiStatus }
             val newMessages = if (idx >= 0) {
                 state.messages.toMutableList().apply { set(idx, ChatMessage.AiStatus(msg)) }
             } else {
                 state.messages + ChatMessage.AiStatus(msg)
             }
-            state.copy(messages = newMessages)
+            state.copy(messages = newMessages, scrollTick = state.scrollTick + 1)
         }
     }
 
@@ -298,20 +299,23 @@ class ChatViewModel(
                     state.copy(messages = replaceOrAddStatus(state.messages, event))
 
                 is ChatMessage.AiText -> {
-                    // 追加到最后一个流式气泡
                     val idx = state.messages.indexOfLast {
                         it is ChatMessage.AiText && (it as ChatMessage.AiText).isStreaming
                     }
                     if (idx >= 0) {
+                        // 追加到已有流式气泡，不触发滚动（lastStreamingText 负责）
                         val existing = state.messages[idx] as ChatMessage.AiText
                         val updated = state.messages.toMutableList().apply {
                             set(idx, existing.copy(text = existing.text + event.text))
                         }
                         state.copy(messages = updated)
                     } else {
-                        // 移除 status，开始新的流式气泡
+                        // 新流式气泡出现，触发一次滚动
                         val withoutStatus = state.messages.filter { it !is ChatMessage.AiStatus }
-                        state.copy(messages = withoutStatus + ChatMessage.AiText(event.text, isStreaming = true))
+                        state.copy(
+                            messages = withoutStatus + ChatMessage.AiText(event.text, isStreaming = true),
+                            scrollTick = state.scrollTick + 1,
+                        )
                     }
                 }
 
@@ -322,7 +326,8 @@ class ChatViewModel(
                 is ChatMessage.AiError -> {
                     val finalized = finalizeStreamingText(state.messages)
                         .filter { it !is ChatMessage.AiStatus }
-                    state.copy(messages = finalized + event)
+                    // 新卡片/选择框出现，触发滚动
+                    state.copy(messages = finalized + event, scrollTick = state.scrollTick + 1)
                 }
 
                 is ChatMessage.InternalCartUpdate ->
