@@ -864,6 +864,10 @@ private fun ProductCardLarge(product: Product, onClick: () -> Unit) {
 // ===== 商品对比表格 =====
 
 @Composable
+private fun ordinalMark(index: Int): String =
+    listOf("①", "②", "③", "④", "⑤").getOrElse(index) { "${index + 1}." }
+
+@Composable
 private fun ComparisonMessage(table: ComparisonTable, onProductClick: (String) -> Unit) {
     val dimColWidth = 72.dp
     val headerHeight = 56.dp
@@ -887,7 +891,7 @@ private fun ComparisonMessage(table: ComparisonTable, onProductClick: (String) -
                     ) {
                         Text("商品对比", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                     }
-                    table.products.forEach { product ->
+                    table.products.forEachIndexed { idx, product ->
                         VerticalDivider(color = borderColor)
                         Box(
                             modifier = Modifier
@@ -897,8 +901,9 @@ private fun ComparisonMessage(table: ComparisonTable, onProductClick: (String) -
                                 .padding(horizontal = 10.dp),
                             contentAlignment = Alignment.CenterStart,
                         ) {
+                            // 序号前缀（①②③…）与底部"加购第N款"按钮一一对应
                             Text(
-                                product.title,
+                                "${ordinalMark(idx)} ${product.title}",
                                 style = MaterialTheme.typography.bodyMedium,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
@@ -938,13 +943,16 @@ private fun ComparisonMessage(table: ComparisonTable, onProductClick: (String) -
             }
         }
 
-        // 推荐理由：移出表格，作为独立 AI 气泡
+        // 推荐理由：移出表格，作为独立 AI 气泡（点名推荐的是哪一款，避免"这款"指代不清）
         table.recommendation?.let { rec ->
             Spacer(Modifier.height(6.dp))
-            AiTextBubble(
-                text = "综合来看，${rec.reason}",
-                isStreaming = false,
-            )
+            val recName = table.products.firstOrNull { it.productId == rec.productId }?.title
+            val recText = if (recName != null) {
+                "综合来看，更推荐「$recName」：${rec.reason}"
+            } else {
+                "综合来看，${rec.reason}"
+            }
+            AiTextBubble(text = recText, isStreaming = false)
         }
     }
 }
