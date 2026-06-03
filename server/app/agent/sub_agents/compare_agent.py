@@ -129,7 +129,7 @@ class CompareAgent:
 
         if compare_names:
             # 按名称搜索，取每个搜索的 Top1
-            for name in compare_names[:2]:
+            for name in compare_names[:5]:
                 results = await hybrid_retriever.retrieve_products(
                     query=name, top_k_chunks=6, top_k_products=1
                 )
