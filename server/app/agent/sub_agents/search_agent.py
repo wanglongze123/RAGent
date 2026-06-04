@@ -177,7 +177,7 @@ class SearchAgent:
         if (not user_already_specific
                 and n > _RECOMMEND_AT
                 and asked_count < _MAX_FOLLOW_UPS
-                and not state.get("shown_ids")):
+                and not state.get("has_shown")):
             slot = _next_slot_dynamic(state, cand_products)   # Tier 2: SKU properties
             if slot is None:
                 slot = _next_slot_to_ask(state, cand_products)  # Tier 3: 关键词兜底
@@ -232,6 +232,7 @@ class SearchAgent:
             return
 
         state["shown_ids"] = [p.product_id for p in shown]
+        state["has_shown"] = True
         await db.update_search_state(session_id, state)
 
         echo = _state_label(state)
@@ -275,6 +276,7 @@ class SearchAgent:
         batch = rest[:_SHOW_TOP]
         shown = [p for rp in batch if (p := product_repo.get(rp["product_id"]))]
         state["shown_ids"] = list(shown_ids) + [p.product_id for p in shown]
+        state["has_shown"] = True
         await db.update_search_state(session_id, state)
 
         yield ev.text_delta("为您换一批其他符合条件的商品：").to_sse()
@@ -389,7 +391,7 @@ class SearchAgent:
         score_map = {rp["product_id"]: rp.get("score", 0.0) for rp in ranked}
 
         # 图搜结果写入 SearchState：品类来自结果（不锁品牌，便于后续"换个牌子"细化）
-        new_state = {"category": shown[0].sub_category, "shown_ids": [p.product_id for p in shown]}
+        new_state = {"category": shown[0].sub_category, "shown_ids": [p.product_id for p in shown], "has_shown": True}
         await db.update_search_state(session_id, new_state)
 
         yield ev.text_delta("根据您上传的图片，为您找到以下相似款：").to_sse()
