@@ -160,6 +160,7 @@ class CompareAgent:
                 prompt_vars={"question": question, "context": context},
                 json_mode=True,
                 temperature=0.2,
+                fast=True,
             )
             data = json.loads(raw)
         except Exception:
