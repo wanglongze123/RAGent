@@ -194,14 +194,23 @@ fun ChatScreen(
     DisposableEffect(Unit) {
         onDispose { ttsManager.shutdown() }
     }
-    // isLoading 从 true → false 表示一轮流式回复结束，此时朗读最后一条 AI 文本
+    // 记录上次播报的文本，避免商品卡/加购/对比等无新文本的轮次重复播旧内容
+    var lastSpokenText by remember { mutableStateOf("") }
     var prevLoading by remember { mutableStateOf(false) }
     LaunchedEffect(uiState.isLoading) {
         if (prevLoading && !uiState.isLoading && ttsEnabled) {
             val lastText = uiState.messages.lastOrNull { it is ChatMessage.AiText } as? ChatMessage.AiText
-            lastText?.let { ttsManager.speak(stripMarkdown(it.text)) }
+            val text = stripMarkdown(lastText?.text ?: "")
+            if (text.isNotBlank() && text != lastSpokenText) {
+                ttsManager.speak(text)
+                lastSpokenText = text
+            }
         }
         prevLoading = uiState.isLoading
+    }
+    // 切换会话时重置，避免新会话第一条消息被误判为"已播过"
+    LaunchedEffect(uiState.sessionId) {
+        lastSpokenText = ""
     }
 
     // ── STT（语音转文字）──────────────────────────────────────
