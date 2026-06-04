@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from app.agent.master_agent import master_agent
 from app.db.relational import (
     create_session,
+    delete_session,
     get_all_messages,
     get_session,
     list_sessions,
@@ -35,6 +36,13 @@ async def create_new_session():
 async def get_sessions():
     """会话列表 — 供客户端抽屉展示历史会话。"""
     return {"sessions": await list_sessions()}
+
+
+@router.delete("/sessions/{session_id}")
+async def delete_session_route(session_id: str):
+    """删除会话及其全部关联数据（消息、购物车、订单）。"""
+    await delete_session(session_id)
+    return {"ok": True}
 
 
 @router.get("/sessions/{session_id}/messages")

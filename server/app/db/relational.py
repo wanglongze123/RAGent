@@ -311,6 +311,16 @@ async def list_sessions() -> list[dict]:
     ]
 
 
+async def delete_session(session_id: str) -> None:
+    """删除会话及其全部关联数据（消息、购物车、订单）"""
+    async with aiosqlite.connect(settings.sqlite_db_path) as db:
+        await db.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+        await db.execute("DELETE FROM cart_items WHERE session_id = ?", (session_id,))
+        await db.execute("DELETE FROM orders WHERE session_id = ?", (session_id,))
+        await db.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        await db.commit()
+
+
 # ───────────────────────── 购物车 ─────────────────────────
 
 async def cart_add(
