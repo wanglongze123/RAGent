@@ -37,6 +37,24 @@ class ProductInquiryAgent:
             product_id = last_shown[0].get("product_id")
 
         if not product_id:
+            # 尝试从对话历史中回答购买记录类问题（下单后 last_shown 被清空的场景）
+            history = session.get("recent_messages", [])
+            order_history = "\n".join(
+                f"{m['role']}: {m['content']}"
+                for m in history[-10:]
+                if m.get("content", "").strip()
+            )
+            if order_history and any(
+                w in message for w in ["买了", "买过", "花了", "订单", "刚买", "买啥"]
+            ):
+                async for token in middleware.chat_stream(
+                    agent_name="product_inquiry",
+                    user_messages=[{"role": "user", "content": message}],
+                    prompt_vars={"context": f"对话历史：\n{order_history}"},
+                    temperature=0.3,
+                ):
+                    yield ev.text_delta(token).to_sse()
+                return
             yield ev.text_delta(
                 "抱歉，我没能确定您在问哪款商品，请描述一下商品名称或重新搜索。"
             ).to_sse()

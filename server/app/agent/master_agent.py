@@ -481,6 +481,12 @@ _PRODUCT_REF_WORDS = [
     "上面的", "刚才的", "前面的", "刚才那款",
 ]
 
+# 购买历史回忆词——不需要 last_shown 非空，直接触发 product_inquiry（从消息历史回答）
+_ORDER_RECALL_WORDS = [
+    "买了什么", "买了哪", "买过什么", "买过哪", "刚才买", "刚买了",
+    "花了多少", "花了几", "订单号", "我的订单", "我买的", "买了啥",
+]
+
 # 含这些词的消息应走其他意图，不走 product_inquiry
 _INQUIRY_EXCLUSIONS = [
     "对比", "比较", "哪个更", "哪个好", "哪款更",         # → compare
@@ -523,14 +529,16 @@ def _match_scene_topic(message: str, session: dict) -> Optional[dict]:
 
 def _is_product_inquiry(message: str, session: dict) -> bool:
     """
-    判断是否为对已展示商品的追问：
-      1. 当前会话里有已展示商品
-      2. 消息含商品指代词
-      3. 消息不含对比/加购/新搜索等排除词
+    判断是否为商品/订单追问：
+      - 购买历史回忆词（买了什么/花了多少等）：无需 last_shown，直接触发
+      - 商品指代词（这款/第一个等）：需要 last_shown 非空
+      - 两类都不能含对比/加购/新搜索等排除词
     """
-    if not session.get("last_shown_products"):
-        return False
     if any(k in message for k in _INQUIRY_EXCLUSIONS):
+        return False
+    if any(w in message for w in _ORDER_RECALL_WORDS):
+        return True
+    if not session.get("last_shown_products"):
         return False
     return any(w in message for w in _PRODUCT_REF_WORDS)
 
