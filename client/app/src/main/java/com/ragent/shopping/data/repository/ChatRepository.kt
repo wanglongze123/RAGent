@@ -68,6 +68,8 @@ class ChatRepository(
     /** 会话列表（抽屉用） */
     suspend fun loadSessions(): List<SessionSummary> = apiService.getSessions().sessions
 
+    suspend fun deleteSession(id: String) = apiService.deleteSession(id)
+
     /** 当前会话购物车（切换/恢复后同步角标用） */
     suspend fun getCart(): CartResponse = apiService.getCart(sessionId)
 

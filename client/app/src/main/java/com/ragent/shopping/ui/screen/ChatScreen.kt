@@ -283,6 +283,7 @@ fun ChatScreen(
                     viewModel.switchSession(id)
                     scope.launch { drawerState.close() }
                 },
+                onDelete = { id -> viewModel.deleteSession(id) },
             )
         },
     ) {
@@ -1415,6 +1416,7 @@ private fun SessionDrawer(
     currentId: String,
     onNewSession: () -> Unit,
     onSwitch: (String) -> Unit,
+    onDelete: (String) -> Unit,
 ) {
     ModalDrawerSheet {
         Column(
@@ -1447,23 +1449,74 @@ private fun SessionDrawer(
             } else {
                 LazyColumn(modifier = Modifier.weight(1f)) {
                     items(sessions, key = { it.sessionId }) { s ->
-                        NavigationDrawerItem(
-                            label = {
-                                Text(
-                                    s.preview.ifBlank { "新对话" },
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            NavigationDrawerItem(
+                                label = {
+                                    Column {
+                                        Text(
+                                            s.preview.ifBlank { "新对话" },
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            formatSessionTime(s.updatedAt),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.outline,
+                                        )
+                                    }
+                                },
+                                icon = { Icon(Icons.Default.ChatBubbleOutline, contentDescription = null) },
+                                selected = s.sessionId == currentId,
+                                onClick = { onSwitch(s.sessionId) },
+                                modifier = Modifier
+                                    .padding(NavigationDrawerItemDefaults.ItemPadding)
+                                    .weight(1f),
+                            )
+                            IconButton(
+                                onClick = { onDelete(s.sessionId) },
+                                modifier = Modifier.size(36.dp),
+                            ) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "删除会话",
+                                    tint = MaterialTheme.colorScheme.outline,
+                                    modifier = Modifier.size(16.dp),
                                 )
-                            },
-                            icon = { Icon(Icons.Default.ChatBubbleOutline, contentDescription = null) },
-                            selected = s.sessionId == currentId,
-                            onClick = { onSwitch(s.sessionId) },
-                            modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
-                        )
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+private fun formatSessionTime(isoTime: String): String {
+    return try {
+        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.getDefault())
+        sdf.timeZone = java.util.TimeZone.getTimeZone("UTC")
+        val date = sdf.parse(isoTime.substringBefore(".")) ?: return ""
+        val now = java.util.Date()
+        val diffMs = now.time - date.time
+        val diffDays = (diffMs / (1000 * 60 * 60 * 24)).toInt()
+        when {
+            diffDays == 0 -> {
+                val hhmm = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+                hhmm.timeZone = java.util.TimeZone.getTimeZone("UTC")
+                "今天 ${hhmm.format(date)}"
+            }
+            diffDays == 1 -> "昨天"
+            diffDays < 7 -> "${diffDays}天前"
+            else -> {
+                val mmdd = java.text.SimpleDateFormat("MM-dd", java.util.Locale.getDefault())
+                mmdd.format(date)
+            }
+        }
+    } catch (e: Exception) {
+        ""
     }
 }
 

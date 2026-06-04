@@ -55,6 +55,16 @@ class ApiService(private val gson: Gson = Gson()) {
         }
     }
 
+    suspend fun deleteSession(sessionId: String) = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("$base/api/v1/sessions/$sessionId")
+            .delete()
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw Exception("删除会话失败: ${response.code}")
+        }
+    }
+
     suspend fun getMessages(sessionId: String): MessagesResponse = withContext(Dispatchers.IO) {
         val request = Request.Builder()
             .url("$base/api/v1/sessions/$sessionId/messages")

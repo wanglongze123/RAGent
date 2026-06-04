@@ -224,6 +224,18 @@ class ChatViewModel(
 
     fun clearToast() = _uiState.update { it.copy(toastMessage = "") }
 
+    fun deleteSession(id: String) {
+        viewModelScope.launch {
+            runCatching { chatRepo.deleteSession(id) }
+            // 若删的是当前会话，新建一个；否则只刷新列表
+            if (id == _uiState.value.sessionId) {
+                newSession()
+            } else {
+                refreshSessions()
+            }
+        }
+    }
+
 
     /** 用户提交收货信息表单（不显示用户气泡，同时持久化到 DataStore 跨会话复用） */
     fun submitOrderForm(name: String, phone: String, address: String) {
