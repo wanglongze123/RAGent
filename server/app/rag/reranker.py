@@ -12,6 +12,7 @@ Reranker — Cross-Encoder 精排，把混合检索的候选集从 Top-15 精选
 降级路径：Doubao LLM 打分（API 调用，当本地模型不可用时兜底）
 """
 import asyncio
+import time
 from typing import Optional
 
 from app.config import settings
@@ -155,10 +156,14 @@ class Reranker:
         if not settings.reranker_enabled:
             return chunks[:top_k]
 
+        t0 = time.time()
         if self._bge.available:
-            return self._bge.rerank(query, chunks, top_k)
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, self._bge.rerank, query, chunks, top_k)
         else:
-            return await self._doubao.rerank(query, chunks, top_k)
+            result = await self._doubao.rerank(query, chunks, top_k)
+        print(f"[perf] rerank {len(chunks)}→{len(result)} candidates: {time.time()-t0:.3f}s", flush=True)
+        return result
 
 
 reranker = Reranker()

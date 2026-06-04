@@ -105,6 +105,7 @@ class ToolMiddleware:
         prompt_vars: Optional[dict[str, Any]] = None,
         json_mode: bool = False,
         temperature: float = 0.7,
+        fast: bool = False,
     ) -> str:
         """
         非流式调用，用于意图分类等需要完整 JSON 输出的场景。
@@ -113,6 +114,7 @@ class ToolMiddleware:
         user_messages: 对话历史 + 当前用户消息
         prompt_vars:  填充 system prompt 里的占位符，如 {context}
         json_mode:    True 时强制 JSON Mode 输出
+        fast:         True 时使用轻量快速模型（意图分类/judge 等结构化小任务）
         """
         t0 = time.time()
         messages = self._build_messages(agent_name, user_messages, prompt_vars)
@@ -122,13 +124,14 @@ class ToolMiddleware:
         if json_mode:
             messages = self._inject_json_instruction(messages)
 
-        result = await llm_client.chat(
-            messages=messages,
-            temperature=temperature,
-        )
+        if fast:
+            result = await llm_client.chat_fast(messages=messages, temperature=temperature)
+        else:
+            result = await llm_client.chat(messages=messages, temperature=temperature)
 
         elapsed = round((time.time() - t0) * 1000)
-        print(f"[middleware] {agent_name} chat {elapsed}ms")
+        model_tag = "fast" if fast else "main"
+        print(f"[middleware] {agent_name} chat({model_tag}) {elapsed}ms")
 
         if json_mode:
             result = self._extract_json(result)

@@ -21,6 +21,13 @@ class DoubaoClient:
             base_url=settings.doubao_base_url,
             timeout=60.0,
         )
+        # fast model 专用 client（可能用不同 API key）
+        fast_key = settings.doubao_fast_api_key or settings.doubao_api_key
+        self._fast_client = AsyncOpenAI(
+            api_key=fast_key,
+            base_url=settings.doubao_base_url,
+            timeout=30.0,
+        )
 
     async def chat_stream(
         self,
@@ -57,6 +64,30 @@ class DoubaoClient:
             stream=False,
             temperature=temperature,
         )
+        return resp.choices[0].message.content or ""
+
+    async def chat_fast(
+        self,
+        messages: list[ChatCompletionMessageParam],
+        temperature: float = 0.0,
+    ) -> str:
+        """快速非流式生成 — 使用轻量模型，适合意图分类/judge 等结构化小任务。
+        未配置 fast model 时自动回退到主模型。
+        """
+        if settings.doubao_fast_model:
+            resp = await self._fast_client.chat.completions.create(
+                model=settings.doubao_fast_model,
+                messages=messages,
+                stream=False,
+                temperature=temperature,
+            )
+        else:
+            resp = await self._client.chat.completions.create(
+                model=settings.doubao_model,
+                messages=messages,
+                stream=False,
+                temperature=temperature,
+            )
         return resp.choices[0].message.content or ""
 
     async def embed_text(self, texts: list[str]) -> list[list[float]]:

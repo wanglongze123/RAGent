@@ -15,6 +15,7 @@ Query 解构：
     价格约束在向量空间里是噪声，必须走结构化过滤才可靠。
 """
 import re
+import time
 from typing import Any, Optional
 from dataclasses import dataclass, field
 
@@ -114,7 +115,10 @@ class HybridRetriever:
         effective_where = where or parsed.where_filter
 
         # 两路并行召回（Python 协程 + 同步 BM25，实际已足够快）
+        t0 = time.time()
         embeddings = await llm_client.embed_text([parsed.semantic_query])
+        print(f"[perf] embed_text: {time.time()-t0:.3f}s", flush=True)
+        t1 = time.time()
         vector_results = self._vs.query(
             query_embedding=embeddings[0],
             top_k=top_k * 2,
@@ -128,6 +132,7 @@ class HybridRetriever:
             where=effective_where,
         )
 
+        print(f"[perf] vector+bm25 search: {time.time()-t1:.3f}s", flush=True)
         # RRF 融合
         fused = _rrf_fuse(vector_results, bm25_results, k=RRF_K)
 

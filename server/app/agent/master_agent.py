@@ -82,7 +82,9 @@ class MasterAgent:
             clarify_question = ""
         else:
             # ── 4. 意图分类 ────────────────────────────────────
+            import time as _time; _t_classify = _time.time()
             intent_result = await self._classify_intent(message, history, session)
+            print(f"[perf] classify_intent ({intent_result.get('intent','?')}): {_time.time()-_t_classify:.3f}s", flush=True)
             intent = intent_result.get("intent", "search")
             params = intent_result.get("params", {})
             needs_clarify = intent_result.get("clarification_needed", False)
@@ -331,6 +333,7 @@ class MasterAgent:
             prompt_vars={"last_shown_products": last_shown_str},
             json_mode=True,
             temperature=0.0,
+            fast=True,
         )
         try:
             return json.loads(raw)

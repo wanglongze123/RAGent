@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     doubao_api_key: str
     doubao_base_url: str = "https://ark.cn-beijing.volces.com/api/v3/"
     doubao_model: str
+    doubao_fast_model: str = ""      # 轻量快速模型，用于意图分类/judge，不设则回退到 doubao_model
+    doubao_fast_api_key: str = ""    # fast model 专用 API key，不设则复用 doubao_api_key
     doubao_embedding_model: str
     doubao_vision_model: str = ""
 

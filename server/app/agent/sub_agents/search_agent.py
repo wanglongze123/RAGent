@@ -908,6 +908,7 @@ async def _llm_judge(
             user_messages=[{"role": "user", "content": content}],
             json_mode=True,
             temperature=0.0,
+            fast=True,
         )
         result = _json.loads(raw)
         selected = result.get("selected_ids", [])
