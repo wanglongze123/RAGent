@@ -70,6 +70,8 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.ShoppingCart
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
@@ -141,6 +143,7 @@ import com.ragent.shopping.ui.theme.BrandIndigo
 import com.ragent.shopping.ui.theme.BrandSky
 import com.ragent.shopping.ui.theme.BrandViolet
 import com.ragent.shopping.ui.viewmodel.ChatViewModel
+import com.ragent.shopping.util.TtsManager
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 
@@ -183,6 +186,22 @@ fun ChatScreen(
             snackbarHostState.showSnackbar(uiState.toastMessage)
             viewModel.clearToast()
         }
+    }
+
+    // ── TTS（文字转语音）──────────────────────────────────────
+    var ttsEnabled by remember { mutableStateOf(false) }
+    val ttsManager = remember { TtsManager(context) }
+    DisposableEffect(Unit) {
+        onDispose { ttsManager.shutdown() }
+    }
+    // isLoading 从 true → false 表示一轮流式回复结束，此时朗读最后一条 AI 文本
+    var prevLoading by remember { mutableStateOf(false) }
+    LaunchedEffect(uiState.isLoading) {
+        if (prevLoading && !uiState.isLoading && ttsEnabled) {
+            val lastText = uiState.messages.lastOrNull { it is ChatMessage.AiText } as? ChatMessage.AiText
+            lastText?.let { ttsManager.speak(stripMarkdown(it.text)) }
+        }
+        prevLoading = uiState.isLoading
     }
 
     // ── STT（语音转文字）──────────────────────────────────────
@@ -283,6 +302,16 @@ fun ChatScreen(
                         }
                     },
                     actions = {
+                        IconButton(onClick = {
+                            ttsEnabled = !ttsEnabled
+                            if (!ttsEnabled) ttsManager.stop()
+                        }) {
+                            Icon(
+                                if (ttsEnabled) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
+                                contentDescription = if (ttsEnabled) "关闭语音播报" else "开启语音播报",
+                                tint = Color.White,
+                            )
+                        }
                         IconButton(onClick = onNavigateToOrders) {
                             Icon(
                                 Icons.Default.ReceiptLong,
