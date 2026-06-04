@@ -324,8 +324,13 @@ class MasterAgent:
         if not context_messages or context_messages[-1]["content"] != message:
             context_messages.append({"role": "user", "content": message})
 
+        # 只传 product_id + title，LLM 只需要解析"第一个"等位置指代，不需要完整字段
         last_shown = session.get("last_shown_products", [])
-        last_shown_str = json.dumps(last_shown, ensure_ascii=False, indent=2)
+        last_shown_slim = [
+            {"product_id": p.get("product_id", ""), "title": p.get("title", "")}
+            for p in last_shown
+        ]
+        last_shown_str = json.dumps(last_shown_slim, ensure_ascii=False)
 
         raw = await middleware.chat(
             agent_name="master",
