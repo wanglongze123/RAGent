@@ -33,6 +33,11 @@ class VectorStore(ABC):
     def count(self) -> int: ...
 
     @abstractmethod
+    def get_all(self) -> dict[str, list]:
+        """返回全量记录 {"ids": [...], "documents": [...], "metadatas": [...]}，供 BM25 构建用"""
+        ...
+
+    @abstractmethod
     def reset(self) -> None: ...
 
 
@@ -93,6 +98,14 @@ class ChromaVectorStore(VectorStore):
 
     def count(self) -> int:
         return self._collection.count()
+
+    def get_all(self) -> dict[str, list]:
+        result = self._collection.get(include=["documents", "metadatas"])
+        return {
+            "ids": result["ids"],
+            "documents": result["documents"],
+            "metadatas": result["metadatas"],
+        }
 
     def reset(self) -> None:
         """重建集合 — 全量重建索引时用"""
@@ -158,7 +171,7 @@ class QdrantVectorStore(VectorStore):
         return out
 
     def _build_filter(self, where: dict):
-        from qdrant_client.models import Filter, FieldCondition, Range, MatchValue, Must
+        from qdrant_client.models import Filter, FieldCondition, Range, MatchValue
         conditions = []
         for key, val in where.items():
             if key == "$and":
@@ -180,6 +193,31 @@ class QdrantVectorStore(VectorStore):
 
     def count(self) -> int:
         return self._client.get_collection(self._collection).points_count
+
+    def get_all(self) -> dict[str, list]:
+        """用 scroll 分页拉取全量 point，还原成 {ids, documents, metadatas}"""
+        ids: list[str] = []
+        documents: list[str] = []
+        metadatas: list[dict] = []
+        offset = None
+        while True:
+            points, offset = self._client.scroll(
+                collection_name=self._collection,
+                with_payload=True,
+                with_vectors=False,
+                limit=512,
+                offset=offset,
+            )
+            for p in points:
+                payload = p.payload or {}
+                ids.append(payload.get("_id", str(p.id)))
+                documents.append(payload.get("document", ""))
+                metadatas.append(
+                    {k: v for k, v in payload.items() if k not in ("_id", "document")}
+                )
+            if offset is None:
+                break
+        return {"ids": ids, "documents": documents, "metadatas": metadatas}
 
     def reset(self) -> None:
         from qdrant_client.models import Distance, VectorParams

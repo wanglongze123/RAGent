@@ -38,9 +38,11 @@ async def lifespan(app: FastAPI):
     if chunk_count == 0:
         print("[startup] ⚠ 向量库为空，请先运行: python -m scripts.build_index")
     else:
-        # 从 Chroma 加载全量 chunk 构建 BM25 索引
-        chroma_collection = vs._collection
-        n_bm25 = bm25_retriever.build_from_chroma(chroma_collection)
+        # 从向量库加载全量 chunk 构建 BM25 索引（Chroma / Qdrant 通用）
+        records = vs.get_all()
+        n_bm25 = bm25_retriever.build_from_records(
+            records["ids"], records["documents"], records["metadatas"]
+        )
         print(f"[startup] BM25 索引: 已构建，共 {n_bm25} 个 chunk")
 
     mode = reranker.load()

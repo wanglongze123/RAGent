@@ -59,18 +59,29 @@ class BM25Retriever:
         self._tokenized_corpus: list[list[str]] = []
         self._built = False
 
-    def build_from_chroma(self, collection) -> int:
-        """从 Chroma collection 加载全量数据并构建 BM25 索引"""
-        result = collection.get(include=["documents", "metadatas"])
-        self._ids = result["ids"]
-        self._documents = result["documents"]
-        self._metadatas = result["metadatas"]
+    def build_from_records(
+        self,
+        ids: list[str],
+        documents: list[str],
+        metadatas: list[dict],
+    ) -> int:
+        """从全量记录构建 BM25 索引（与底层向量库无关）"""
+        self._ids = ids
+        self._documents = documents
+        self._metadatas = metadatas
 
         # jieba 分词
         self._tokenized_corpus = [_tokenize(doc) for doc in self._documents]
         self._bm25 = BM25Okapi(self._tokenized_corpus)
         self._built = True
         return len(self._ids)
+
+    def build_from_chroma(self, collection) -> int:
+        """从 Chroma collection 加载全量数据并构建 BM25 索引（兼容旧调用）"""
+        result = collection.get(include=["documents", "metadatas"])
+        return self.build_from_records(
+            result["ids"], result["documents"], result["metadatas"]
+        )
 
     def search(
         self,
