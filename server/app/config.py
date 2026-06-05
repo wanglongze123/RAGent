@@ -26,11 +26,25 @@ class Settings(BaseSettings):
     # ===== 运行环境 =====
     environment: str = "development"
 
-    # ===== 存储 =====
-    vector_store: str = "chroma"
-    chroma_persist_dir: str = "./chroma_db"
+    # ===== 关系数据库（sqlite / mysql）=====
     db_type: str = "sqlite"
     sqlite_db_path: str = "./app.db"
+    mysql_host: str = "mysql"
+    mysql_port: int = 3306
+    mysql_user: str = "ragent"
+    mysql_password: str = "ragent123"
+    mysql_database: str = "ragent"
+
+    # ===== 向量数据库（chroma / qdrant）=====
+    vector_store: str = "chroma"
+    chroma_persist_dir: str = "./chroma_db"
+    qdrant_host: str = "qdrant"
+    qdrant_port: int = 6333
+
+    # ===== 缓存（none / redis）=====
+    cache_backend: str = "none"
+    redis_host: str = "redis"
+    redis_port: int = 6379
 
     # ===== 数据集 =====
     dataset_dir: str = "../ecommerce_agent_dataset"

@@ -1,16 +1,69 @@
+version: "3.9"
+
 services:
-  server:
-    build: ./server
+
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: ragent
+      MYSQL_USER: ragent
+      MYSQL_PASSWORD: ragent123
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uragent", "-pragent123"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 3600 1
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  backend:
+    build: .
+    restart: unless-stopped
     ports:
       - "8000:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      qdrant:
+        condition: service_started
+    environment:
+      DB_TYPE: mysql
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: ragent
+      MYSQL_PASSWORD: ragent123
+      MYSQL_DATABASE: ragent
+      VECTOR_STORE: qdrant
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      CACHE_BACKEND: redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      DATASET_DIR: /assets/ecommerce_agent_dataset
+      RERANKER_MODEL_PATH: /assets/models/Xorbits/bge-reranker-base
     env_file:
-      - ./server/.env
+      - server/.env
     volumes:
-      # 向量库持久化到本地，容器重启不丢数据
-      - ./server/chroma_db:/app/chroma_db
-      # 数据集：容器内路径需与 config.py 的 dataset_dir 默认值 "../ecommerce_agent_dataset" 对齐
-      # 从 /app 往上一级就是 /ecommerce_agent_dataset
-      - ./ecommerce_agent_dataset:/ecommerce_agent_dataset
-      # reranker 模型：避免每次 build 重新下载
-      - ./server/models:/app/models
-    restart: unless-stopped
+      - /root/_ragent_assets:/assets:ro
+
+volumes:
+  mysql_data:
+  redis_data:
+  qdrant_data:

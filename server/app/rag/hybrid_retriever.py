@@ -20,6 +20,7 @@ from typing import Any, Optional
 from dataclasses import dataclass, field
 
 from app.db.vector_store import get_vector_store
+from app.db.cache import cache_get, cache_set
 from app.llm.client import llm_client
 from app.rag.bm25_retriever import bm25_retriever
 from app.rag.query_expander import expand_query
@@ -165,11 +166,13 @@ class HybridRetriever:
     ) -> list[dict[str, Any]]:
         """
         商品级聚合 + Reranker 精排（对外主入口）。
-
-        关键设计：Reranker 在商品级别打分，不在 chunk 级别。
-        原因：chunk 级别打分会被"提到油皮的防晒品"干扰，
-        商品级别用"标题 + 最相关 chunk"代表商品，让 BGE 看清楚商品是什么。
+        Redis 缓存：相同 query + filter 直接返回缓存，无 TTL（数据集静态）。
         """
+        cached = await cache_get("retrieve", query=query, where=where, top_k=top_k_products)
+        if cached is not None:
+            print(f"[cache] HIT: {query[:30]}", flush=True)
+            return cached
+
         chunks = await self.retrieve(query, top_k=top_k_chunks, where=where)
 
         # 1. 先聚合到商品级别
@@ -214,6 +217,7 @@ class HybridRetriever:
                 p["score"] = rc.score
                 reranked_products.append(p)
 
+        await cache_set("retrieve", reranked_products, query=query, where=where, top_k=top_k_products)
         return reranked_products
 
 
