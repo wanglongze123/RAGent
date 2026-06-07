@@ -210,11 +210,14 @@ class HybridRetriever:
         reranked_chunks = await reranker.rerank(query, product_chunks, top_k=top_k_products)
 
         # 3. 还原回 product_map 结构
+        #    hit_chunks 仅用于上面拼 reranker 输入，下游不消费；这里剥掉，
+        #    否则 RetrievedChunk(dataclass) 无法 JSON 序列化，会导致缓存写入失败。
         reranked_products = []
         for rc in reranked_chunks:
             p = next((x for x in candidates if x["product_id"] == rc.product_id), None)
             if p:
                 p["score"] = rc.score
+                p.pop("hit_chunks", None)
                 reranked_products.append(p)
 
         await cache_set("retrieve", reranked_products, query=query, where=where, top_k=top_k_products)
