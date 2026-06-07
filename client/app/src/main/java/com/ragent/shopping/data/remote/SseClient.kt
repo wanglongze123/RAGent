@@ -1,5 +1,6 @@
 package com.ragent.shopping.data.remote
 
+import com.ragent.shopping.data.local.DeviceId
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -25,6 +26,14 @@ class SseClient {
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
+        // 每个请求带上设备标识，服务端据此隔离会话
+        .addInterceptor { chain ->
+            chain.proceed(
+                chain.request().newBuilder()
+                    .header("X-Device-Id", DeviceId.get())
+                    .build()
+            )
+        }
         .build()
 
     fun stream(url: String, jsonBody: String): Flow<Pair<String, String>> = callbackFlow {

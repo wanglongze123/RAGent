@@ -1,6 +1,7 @@
 package com.ragent.shopping.data.remote
 
 import com.google.gson.Gson
+import com.ragent.shopping.data.local.DeviceId
 import com.ragent.shopping.data.model.AddCartRequest
 import com.ragent.shopping.data.model.CartItem
 import com.ragent.shopping.data.model.CartResponse
@@ -26,6 +27,14 @@ class ApiService(private val gson: Gson = Gson()) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
+        // 每个请求带上设备标识，服务端据此隔离会话
+        .addInterceptor { chain ->
+            chain.proceed(
+                chain.request().newBuilder()
+                    .header("X-Device-Id", DeviceId.get())
+                    .build()
+            )
+        }
         .build()
 
     private val jsonType = "application/json; charset=utf-8".toMediaType()
