@@ -22,12 +22,18 @@ android {
     }
 
     buildTypes {
+        debug {
+            // 临时直连云端服务器测试（原值：http://localhost:8000 + adb reverse）
+            buildConfigField("String", "BASE_URL", "\"http://123.56.220.52:8000\"")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // 云端服务器公网地址
+            buildConfigField("String", "BASE_URL", "\"http://123.56.220.52:8000\"")
         }
     }
     compileOptions {
@@ -36,6 +42,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
