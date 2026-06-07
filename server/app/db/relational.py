@@ -25,7 +25,10 @@ async def _get_pool():
             password=settings.mysql_password,
             db=settings.mysql_database,
             charset="utf8mb4",
-            autocommit=False,
+            # autocommit=True：每条语句独立成事务，读操作总能看到最新已提交数据。
+            # 否则连接池里的读连接在 REPEATABLE READ 下会复用陈旧快照，
+            # 导致 get_session 查不到刚 create_session 的会话 → 重复创建撞主键。
+            autocommit=True,
             minsize=2,
             maxsize=10,
             connect_timeout=10,
