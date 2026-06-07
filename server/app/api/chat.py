@@ -6,8 +6,9 @@
 """
 import uuid
 from datetime import datetime
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.agent.master_agent import master_agent
@@ -25,17 +26,17 @@ router = APIRouter()
 
 
 @router.post("/sessions", response_model=SessionCreateResponse)
-async def create_new_session():
+async def create_new_session(x_device_id: Optional[str] = Header(None)):
     sid = f"sess_{uuid.uuid4().hex[:12]}"
     now = datetime.utcnow()
-    await create_session(sid)
+    await create_session(sid, x_device_id)
     return SessionCreateResponse(session_id=sid, created_at=now)
 
 
 @router.get("/sessions")
-async def get_sessions():
-    """会话列表 — 供客户端抽屉展示历史会话。"""
-    return {"sessions": await list_sessions()}
+async def get_sessions(x_device_id: Optional[str] = Header(None)):
+    """会话列表 — 供客户端抽屉展示历史会话（按设备 X-Device-Id 隔离）。"""
+    return {"sessions": await list_sessions(x_device_id)}
 
 
 @router.delete("/sessions/{session_id}")
@@ -65,11 +66,11 @@ async def get_session_messages(session_id: str):
 
 
 @router.post("/chat/stream")
-async def chat_stream(req: ChatRequest):
-    # 会话不存在时自动创建（兼容客户端直接带 session_id 的情况）
+async def chat_stream(req: ChatRequest, x_device_id: Optional[str] = Header(None)):
+    # 会话不存在时自动创建（兼容客户端直接带 session_id 的情况），并记录所属设备
     session = await get_session(req.session_id)
     if not session:
-        await create_session(req.session_id)
+        await create_session(req.session_id, x_device_id)
 
     async def event_stream():
         try:
@@ -96,10 +97,10 @@ async def chat_stream(req: ChatRequest):
 
 
 @router.post("/search/by-image")
-async def search_by_image(req: ImageSearchRequest):
+async def search_by_image(req: ImageSearchRequest, x_device_id: Optional[str] = Header(None)):
     session = await get_session(req.session_id)
     if not session:
-        await create_session(req.session_id)
+        await create_session(req.session_id, x_device_id)
 
     async def event_stream():
         try:

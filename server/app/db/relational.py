@@ -118,6 +118,7 @@ db = _DB()
 _CREATE_SQLITE = """
 CREATE TABLE IF NOT EXISTS sessions (
     session_id          TEXT PRIMARY KEY,
+    device_id           TEXT,
     agent_state         TEXT NOT NULL DEFAULT 'browsing',
     last_shown_products TEXT NOT NULL DEFAULT '[]',
     order_state         TEXT NOT NULL DEFAULT '{}',
@@ -170,6 +171,7 @@ CREATE TABLE IF NOT EXISTS order_items (
 _CREATE_MYSQL = """
 CREATE TABLE IF NOT EXISTS sessions (
     session_id          VARCHAR(64)   PRIMARY KEY,
+    device_id           VARCHAR(64),
     agent_state         VARCHAR(32)   NOT NULL DEFAULT 'browsing',
     last_shown_products MEDIUMTEXT    NOT NULL,
     order_state         MEDIUMTEXT    NOT NULL,
@@ -238,6 +240,18 @@ async def init_db() -> None:
                     stmt = stmt.strip()
                     if stmt:
                         await cur.execute(stmt)
+                # 增量迁移（老库补 device_id 列）。MySQL 的 ADD COLUMN 不支持
+                # IF NOT EXISTS，需先查 information_schema 判断列是否已存在。
+                await cur.execute(
+                    "SELECT COUNT(*) FROM information_schema.columns "
+                    "WHERE table_schema = DATABASE() "
+                    "AND table_name = 'sessions' AND column_name = 'device_id'"
+                )
+                (has_device_id,) = await cur.fetchone()
+                if not has_device_id:
+                    await cur.execute(
+                        "ALTER TABLE sessions ADD COLUMN device_id VARCHAR(64) AFTER session_id"
+                    )
                 await conn.commit()
         print("[startup] MySQL: 数据库初始化完成")
     else:
@@ -256,6 +270,10 @@ async def init_db() -> None:
                     await db_conn.execute(
                         f"ALTER TABLE sessions ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}"
                     )
+            # device_id 列（可空，无默认值，老会话留空）
+            cur = await db_conn.execute("PRAGMA table_info(sessions)")
+            if "device_id" not in [r[1] for r in await cur.fetchall()]:
+                await db_conn.execute("ALTER TABLE sessions ADD COLUMN device_id TEXT")
             cur = await db_conn.execute("PRAGMA table_info(messages)")
             if "blocks" not in [r[1] for r in await cur.fetchall()]:
                 await db_conn.execute(
@@ -267,13 +285,13 @@ async def init_db() -> None:
 
 # ───────────────────────── 会话 ─────────────────────────
 
-async def create_session(session_id: str) -> dict:
+async def create_session(session_id: str, device_id: Optional[str] = None) -> dict:
     now = _now()
     await db.execute(
-        "INSERT INTO sessions (session_id, agent_state, last_shown_products, "
+        "INSERT INTO sessions (session_id, device_id, agent_state, last_shown_products, "
         "order_state, scene_context, search_state, created_at, updated_at) "
-        "VALUES (?, 'browsing', '[]', '{}', '{}', '{}', ?, ?)",
-        (session_id, now, now),
+        "VALUES (?, ?, 'browsing', '[]', '{}', '{}', '{}', ?, ?)",
+        (session_id, device_id, now, now),
     )
     return {"session_id": session_id, "agent_state": "browsing", "created_at": now}
 
@@ -367,7 +385,10 @@ async def get_all_messages(session_id: str) -> list[dict]:
     return rows
 
 
-async def list_sessions() -> list[dict]:
+async def list_sessions(device_id: Optional[str] = None) -> list[dict]:
+    # 按设备隔离：无 device_id 一律返回空，绝不泄露其他设备的会话。
+    if not device_id:
+        return []
     sql = """
         SELECT
             s.session_id,
@@ -379,10 +400,11 @@ async def list_sessions() -> list[dict]:
             (SELECT MAX(created_at) FROM messages m
              WHERE m.session_id = s.session_id) AS last_msg_at
         FROM sessions s
-        WHERE EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.session_id)
+        WHERE s.device_id = ?
+          AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.session_id)
         ORDER BY last_msg_at DESC
     """
-    rows = await db.fetchall(sql)
+    rows = await db.fetchall(sql, (device_id,))
     return [
         {
             "session_id": r["session_id"],
