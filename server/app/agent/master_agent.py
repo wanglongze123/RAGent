@@ -19,6 +19,7 @@ from app.agent.state_machine import AgentState, get_next_state, is_agent_allowed
 from app.db.relational import (
     add_message,
     cart_get,
+    clear_search_state,
     create_session,
     get_recent_messages,
     get_session,
@@ -97,6 +98,13 @@ class MasterAgent:
 
         # 后处理：用户原话里的硬过滤关键词（LLM 经常漏填 exclude_brands/exclude_attrs）
         params = _enrich_filters_from_message(params, message)
+
+        # 场景主题切换：用户点击"了解X"切换到新主题时，必须清空上一个主题遗留的
+        # search_state（category/price/brand 等约束），否则新主题的检索会沿用旧约束，
+        # 导致"了解度假穿搭"返回的还是防晒霜。
+        if params.get("scene_topic"):
+            await clear_search_state(session_id)
+            session["search_state"] = {}
 
         # 特殊路由：在 cart_management 状态下的 clarify 意图应路由到 cart
         if intent == "clarify" and current_state == AgentState.CART_MANAGEMENT:
