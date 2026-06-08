@@ -100,11 +100,14 @@ class MasterAgent:
         params = _enrich_filters_from_message(params, message)
 
         # 场景主题切换：用户点击"了解X"切换到新主题时，必须清空上一个主题遗留的
-        # search_state（category/price/brand 等约束），否则新主题的检索会沿用旧约束，
-        # 导致"了解度假穿搭"返回的还是防晒霜。
+        # search_state 和 last_shown_products，否则：
+        # 1. 旧 category/price 约束导致新主题检索返回旧商品
+        # 2. 旧 last_shown 干扰出卡逻辑，且"直接帮我搜"的 query 可能 HIT 旧缓存
         if params.get("scene_topic"):
             await clear_search_state(session_id)
             session["search_state"] = {}
+            await update_session_state(session_id, last_shown_products=[])
+            session["last_shown_products"] = []
 
         # 特殊路由：在 cart_management 状态下的 clarify 意图应路由到 cart
         if intent == "clarify" and current_state == AgentState.CART_MANAGEMENT:
