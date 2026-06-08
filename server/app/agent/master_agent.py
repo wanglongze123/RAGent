@@ -318,7 +318,7 @@ class MasterAgent:
             session.get("last_shown_products")
             or (session.get("search_state") or {}).get("category")
         )
-        quick = _quick_classify(message, current_state, has_pending_sku, has_search_context)
+        quick = _quick_classify(message, current_state, has_pending_sku, has_search_context, session)
         if quick is not None:
             return quick
 
@@ -612,7 +612,7 @@ _PURCHASE_PRODUCT_REFS = {
 }
 
 
-def _quick_classify(message: str, current_state: str, has_pending_sku: bool = False, has_search_context: bool = False) -> Optional[dict]:  # noqa: E501
+def _quick_classify(message: str, current_state: str, has_pending_sku: bool = False, has_search_context: bool = False, session: Optional[dict] = None) -> Optional[dict]:  # noqa: E501
     """
     用纯规则判定意图。返回 LLM JSON 同构 dict，或 None（让 LLM 兜底）。
 
@@ -670,7 +670,7 @@ def _quick_classify(message: str, current_state: str, has_pending_sku: bool = Fa
     # 应判 scene 而不是单品 search。
     # 但如果 scene_context 已存在（用户正在场景购物流程中），不再重新规划，
     # 防止用户回答反问时（如"户外防晒"）被 _SCENE_KEYWORDS 误判为新 scene 请求。
-    scene_ctx = session.get("scene_context") or {}
+    scene_ctx = (session or {}).get("scene_context") or {}
     if any(k in msg for k in _SCENE_KEYWORDS) and not scene_ctx.get("topics"):
         return _quick_dict("scene", {"query": msg})
 
