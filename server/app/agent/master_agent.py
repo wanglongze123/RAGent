@@ -352,7 +352,17 @@ class MasterAgent:
             fast=True,
         )
         try:
-            return json.loads(raw)
+            result = json.loads(raw)
+            # 场景流程中（scene_context 已有主题）时，拦截 LLM 误判的 scene 意图，
+            # 降级为 search，防止用户回答反问时重新触发场景规划。
+            scene_ctx = session.get("scene_context") or {}
+            if result.get("intent") == "scene" and scene_ctx.get("topics"):
+                result["intent"] = "search"
+                if not result.get("params"):
+                    result["params"] = {}
+                if not result["params"].get("query"):
+                    result["params"]["query"] = message
+            return result
         except json.JSONDecodeError:
             return {"intent": "search", "params": {"query": message}}
 
@@ -657,8 +667,11 @@ def _quick_classify(message: str, current_state: str, has_pending_sku: bool = Fa
         return _quick_dict("compare", {})
 
     # 场景化组合优先级要在 search 之前判 — "推荐三亚度假整套" 同时含"推荐"和"度假"，
-    # 应判 scene 而不是单品 search
-    if any(k in msg for k in _SCENE_KEYWORDS):
+    # 应判 scene 而不是单品 search。
+    # 但如果 scene_context 已存在（用户正在场景购物流程中），不再重新规划，
+    # 防止用户回答反问时（如"户外防晒"）被 _SCENE_KEYWORDS 误判为新 scene 请求。
+    scene_ctx = session.get("scene_context") or {}
+    if any(k in msg for k in _SCENE_KEYWORDS) and not scene_ctx.get("topics"):
         return _quick_dict("scene", {"query": msg})
 
     if any(k in msg for k in _SEARCH_KEYWORDS):
