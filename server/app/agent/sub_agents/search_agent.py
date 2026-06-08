@@ -31,7 +31,7 @@ from app.models import events as ev
 from app.rag.hybrid_retriever import hybrid_retriever
 
 
-_FETCH_K = 12          # 每轮召回上限（sub_category 最多约 12 个，足够覆盖）
+_FETCH_K = 8           # 每轮召回上限，控制 reranker 候选数（8*2=16）避免精排超时
 _RECOMMEND_AT = 3      # 候选收敛到 ≤ 此值即直接出卡，不再反问
 _SHOW_TOP = 3          # 一次展示的商品数
 _MAX_FOLLOW_UPS = 3    # 开放邀请后最多追问次数（不含邀请本身）
