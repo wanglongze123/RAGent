@@ -170,9 +170,17 @@ class CartAgent:
 
         # cart_update 事件已携带 toast 提示，无需再调 LLM 生成确认文字
         # 直接给出下一步选择框，节省 3-8s 等待
+        # 如果当前在场景购物流程，把剩余主题选项注入，让用户无需返回就能继续逛
+        scene_ctx = session.get("scene_context") or {}
+        sc_topics = scene_ctx.get("topics") or []
+        remaining_topics = [f"了解{t['theme']}" for t in sc_topics if t.get("theme")]
+        if remaining_topics:
+            options = ["帮我下单", "查看购物车"] + remaining_topics + ["结束购物"]
+        else:
+            options = ["帮我下单", "查看购物车", f"推荐其他{product.sub_category}"]
         yield ev.clarification(
             question="接下来？",
-            options=["帮我下单", "查看购物车", f"推荐其他{product.sub_category}"],
+            options=options,
         ).to_sse()
 
     async def _handle_remove(

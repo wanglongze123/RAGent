@@ -19,6 +19,7 @@ from app.agent.state_machine import AgentState, get_next_state, is_agent_allowed
 from app.db.relational import (
     add_message,
     cart_get,
+    clear_search_state,
     create_session,
     get_recent_messages,
     get_session,
@@ -97,6 +98,16 @@ class MasterAgent:
 
         # 后处理：用户原话里的硬过滤关键词（LLM 经常漏填 exclude_brands/exclude_attrs）
         params = _enrich_filters_from_message(params, message)
+
+        # 场景主题切换：用户点击"了解X"切换到新主题时，必须清空上一个主题遗留的
+        # search_state 和 last_shown_products，否则：
+        # 1. 旧 category/price 约束导致新主题检索返回旧商品
+        # 2. 旧 last_shown 干扰出卡逻辑，且"直接帮我搜"的 query 可能 HIT 旧缓存
+        if params.get("scene_topic"):
+            await clear_search_state(session_id)
+            session["search_state"] = {}
+            await update_session_state(session_id, last_shown_products=[])
+            session["last_shown_products"] = []
 
         # 特殊路由：在 cart_management 状态下的 clarify 意图应路由到 cart
         if intent == "clarify" and current_state == AgentState.CART_MANAGEMENT:
@@ -307,7 +318,7 @@ class MasterAgent:
             session.get("last_shown_products")
             or (session.get("search_state") or {}).get("category")
         )
-        quick = _quick_classify(message, current_state, has_pending_sku, has_search_context)
+        quick = _quick_classify(message, current_state, has_pending_sku, has_search_context, session)
         if quick is not None:
             return quick
 
@@ -341,7 +352,17 @@ class MasterAgent:
             fast=True,
         )
         try:
-            return json.loads(raw)
+            result = json.loads(raw)
+            # 场景流程中（scene_context 已有主题）时，拦截 LLM 误判的 scene 意图，
+            # 降级为 search，防止用户回答反问时重新触发场景规划。
+            scene_ctx = session.get("scene_context") or {}
+            if result.get("intent") == "scene" and scene_ctx.get("topics"):
+                result["intent"] = "search"
+                if not result.get("params"):
+                    result["params"] = {}
+                if not result["params"].get("query"):
+                    result["params"]["query"] = message
+            return result
         except json.JSONDecodeError:
             return {"intent": "search", "params": {"query": message}}
 
@@ -591,7 +612,7 @@ _PURCHASE_PRODUCT_REFS = {
 }
 
 
-def _quick_classify(message: str, current_state: str, has_pending_sku: bool = False, has_search_context: bool = False) -> Optional[dict]:  # noqa: E501
+def _quick_classify(message: str, current_state: str, has_pending_sku: bool = False, has_search_context: bool = False, session: Optional[dict] = None) -> Optional[dict]:  # noqa: E501
     """
     用纯规则判定意图。返回 LLM JSON 同构 dict，或 None（让 LLM 兜底）。
 
@@ -646,8 +667,11 @@ def _quick_classify(message: str, current_state: str, has_pending_sku: bool = Fa
         return _quick_dict("compare", {})
 
     # 场景化组合优先级要在 search 之前判 — "推荐三亚度假整套" 同时含"推荐"和"度假"，
-    # 应判 scene 而不是单品 search
-    if any(k in msg for k in _SCENE_KEYWORDS):
+    # 应判 scene 而不是单品 search。
+    # 但如果 scene_context 已存在（用户正在场景购物流程中），不再重新规划，
+    # 防止用户回答反问时（如"户外防晒"）被 _SCENE_KEYWORDS 误判为新 scene 请求。
+    scene_ctx = (session or {}).get("scene_context") or {}
+    if any(k in msg for k in _SCENE_KEYWORDS) and not scene_ctx.get("topics"):
         return _quick_dict("scene", {"query": msg})
 
     if any(k in msg for k in _SEARCH_KEYWORDS):

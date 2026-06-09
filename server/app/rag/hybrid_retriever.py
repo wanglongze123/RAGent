@@ -191,7 +191,7 @@ class HybridRetriever:
                 product_map[pid]["hit_chunks"].append(c)
 
         ranked = sorted(product_map.values(), key=lambda x: x["score"], reverse=True)
-        candidates = ranked[:top_k_products * 3]  # 给 reranker 更多候选商品
+        candidates = ranked[:top_k_products * 2]  # 控制 reranker 候选数，避免候选过多导致精排超时
 
         # 2. 商品级 Reranker：用"标题 + 最相关 chunk"代表每个商品
         product_chunks = [

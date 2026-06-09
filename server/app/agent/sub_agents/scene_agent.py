@@ -22,6 +22,28 @@ from app.agent.middleware import middleware
 from app.db import relational as db
 from app.models import events as ev
 
+# 数据集实际存在的品类关键词——topic query 必须命中其中之一才算有效。
+# 这是硬校验，防止 LLM 规划数据集里不存在的商品（如连衣裙、护膝、雨伞等）。
+_VALID_CATEGORY_KEYWORDS = [
+    # 服饰运动
+    "跑步鞋", "跑鞋", "篮球鞋", "徒步鞋", "登山鞋",
+    "T恤", "速干", "卫衣", "运动裤", "运动短裤", "瑜伽裤", "户外裤",
+    "背包", "帽子",
+    # 美妆护肤
+    "防晒", "面霜", "精华", "化妆水", "眼霜", "洁面", "卸妆",
+    "面膜", "粉底", "蜜粉", "唇釉", "眉笔",
+    # 数码电子
+    "手机", "笔记本", "电脑", "平板", "耳机",
+    # 食品饮料
+    "咖啡", "牛奶", "酸奶", "茶饮", "功能饮料", "碳酸饮料",
+    "坚果", "零食", "方便面", "调味",
+]
+
+
+def _is_valid_topic(query: str) -> bool:
+    """检查 topic query 是否对应数据集中存在的品类。"""
+    return any(kw in query for kw in _VALID_CATEGORY_KEYWORDS)
+
 
 # 用户主动控制 scene 生命周期的关键词
 _REPLAN_KEYWORDS = ["重新规划"]
@@ -69,7 +91,8 @@ class SceneAgent:
         scene_summary = plan.get("scene_summary", "").strip()
         raw_topics: list[dict] = plan.get("topics", [])[:4]
 
-        # 校验并清洗 topics：必须有 theme 和 query，theme 唯一
+        # 校验并清洗 topics：必须有 theme 和 query，theme 唯一，
+        # 且 query 必须命中数据集中存在的品类（硬过滤，防止 LLM 规划库外商品）
         topics: list[dict] = []
         seen_themes: set[str] = set()
         for t in raw_topics:
@@ -79,6 +102,8 @@ class SceneAgent:
                 continue
             if theme in seen_themes:
                 continue
+            if not _is_valid_topic(query):
+                continue  # 库外品类直接剔除
             seen_themes.add(theme)
             topics.append({"theme": theme, "query": query})
 
